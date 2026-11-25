@@ -1,0 +1,44 @@
+name: Keep the database awake
+
+# The hosting plan pauses an idle database after about a week. Once a day this makes one
+# read-only request with the browser-safe publishable key. It changes no data, checks out no
+# code and cannot deploy. Scheduled runs start only from the default branch. In a public
+# repository GitHub turns schedules off after 60 days without repository activity.
+
+on:
+  schedule:
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  read-status:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read the public status
+        env:
+          KEY: ${{ secrets.TRIAL_SUPABASE_PUBLISHABLE_KEY }}
+          URL: ${{ secrets.TRIAL_SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          KEY="$(printf '%s' "$KEY" | tr -d '[:space:]')"
+          URL="$(printf '%s' "$URL" | tr -d '[:space:]')"
+          URL="${URL%/}"; URL="${URL%/rest/v1}"
+          HOST="${URL#https://}"
+          [ -z "$KEY" ] || echo "::add-mask::$KEY"
+          [ -z "$HOST" ] || { echo "::add-mask::$HOST"; echo "::add-mask::${HOST%%.*}"; }
+          [[ "$KEY" == sb_publishable_* ]] || { echo "The key is missing or is not a publishable key. Nothing was sent."; exit 1; }
+          [[ "$URL" =~ ^https://[a-z0-9]{20}\.supabase\.co$ ]] || { echo "The project URL is missing or has an unexpected form. Nothing was sent."; exit 1; }
+          code="$(curl --silent --retry 3 --retry-delay 20 --max-time 30 --output /dev/null \
+            --write-out '%{http_code}' --request POST \
+            --header "apikey: $KEY" --header 'Content-Type: application/json' --data '{}' \
+            "$URL/rest/v1/rpc/get_shop_status" 2>/dev/null)" || true
+          [ "$code" = 200 ] || { echo "The database did not answer as expected (HTTP ${code:-none})."; exit 1; }
+          echo "The database answered."
