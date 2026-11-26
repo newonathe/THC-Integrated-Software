@@ -1,0 +1,146 @@
+import { DROP_CLOSED_MESSAGE } from '@/lib/rules/capacity';
+import { ownerOr, withContact } from '@/lib/orders/identity';
+
+/**
+ * Every sentence the live checkout, lookup, waitlist and status page say that the ported
+ * prototype did not. One place, so the owner can sign each one off.
+ *
+ * No line names the owner or the shop (audit H14): the few that say who acts or how to reach
+ * the shop are getters that ask `identity.ts`, which holds her own words or neutral ones.
+ *
+ * SIGNED OFF: `closed` (`DROP_CLOSED_MESSAGE`, verbatim from the prototype) and the ported
+ * sentences the status page keeps (they are reused in `status-view.ts`, not copied here).
+ *
+ * PLACEHOLDER — every other line below needs the owner's wording. Do not delete this comment,
+ * and do not present a rewrite as approved, until she has given the sentences (listed in
+ * the project notes). They are plain and short on purpose: a plausible invention nobody
+ * reviewed is worse than a stiff line she can see and replace.
+ */
+export const ORDER_COPY = {
+  closed: DROP_CLOSED_MESSAGE,
+  /** ZC002: `left` is a count of slots (quantity times weight), not boxes. */
+  room: (left: number | null): string =>
+    left === null || left <= 0
+      ? 'There is no room left for that pickup week. Pick another date, or join the waiting list.'
+      : left === 1
+        ? 'Only 1 slot is left for that pickup week. Take a cookie off your order, or pick another date.'
+        : `Only ${left} slots are left for that pickup week. Take some cookies off your order, or pick another date.`,
+  tooManyUnpaid:
+    'This number already has unpaid orders. Pay for them, or wait for them to lapse, then order again.',
+  pickup: 'That pickup date or time is not available. Pick another.',
+  method: 'That payment method is not offered any more. Pick another.',
+  waitlistLimit: 'This number is already on the waiting list for several dates.',
+  malformed:
+    'Something in your order was not accepted. Check your name, Instagram handle, mobile number and reference, how many cookies you picked, and that every cookie is still on the menu.',
+  idReused:
+    'This order was already used for a different order. Check "Find my order" before you order again.',
+  unavailable: 'Ordering is not available right now. Try again later.',
+  unknown:
+    'We could not confirm your order. Tap "Try again": it sends the same order, and if it already went through you will get its number.',
+  waitlistUnknown: 'We could not confirm that. Tap "Try again": sending it twice does no harm.',
+  changeWarning:
+    'Check "Find my order" first: your last try may have gone through, and a changed order is a new order.',
+  rulesUnavailable: 'The pickup days could not be loaded. Try reading them again.',
+  optionsUnavailable: 'Order options could not be loaded. Try reading them again.',
+  noMenu: 'Nothing is on the menu yet.',
+  noOrderToRepeat: 'There is no order on screen to repeat.',
+  locked:
+    'Your last try is not settled yet. Tap "Try again" on the checkout, or "Change the order".',
+  placedLocked: 'Your order is placed. Tap "Order again" to start another.',
+  lookupIntro: 'Your order number and the mobile number you ordered with will find it.',
+  refPlaceholder: 'From your receipt, if you have paid',
+  loadingOrder: 'Loading your order…',
+  statusErrorTitle: 'We could not load your order',
+  statusMissingTitle: 'We could not find that order',
+  linkCopied: 'Link copied.',
+  linkCopyFailed: 'Copy the link from the page instead.',
+  /** The status page's new lines (the ported sentences it keeps are in status-view.ts). */
+  status: {
+    receivedHeld: (method: string, when: string): string =>
+      `We have your order. Payment method: ${method}; the order is held until ${when}.`,
+    get receivedNoHold(): string {
+      return 'We have your order. ' + ownerOr('We') + ' will confirm your payment.';
+    },
+    get lapsed(): string {
+      return withContact('This order was not paid in time, so its slots were released.');
+    },
+    get cancelledBody(): string {
+      return withContact('This order is cancelled.');
+    },
+    readyBody: 'Packed and waiting for your pickup window.',
+    stepReceived: 'We have your order',
+    /** PLACEHOLDER: neutral payment-state wording; owner copy acceptance stays open. */
+    paymentChecking: 'Payment needs checking by the shop.',
+    paymentRecorded: 'Payment confirmed by the shop.',
+    preparationWaiting: 'Waiting for preparation',
+    preparing: 'Preparing your cookies',
+    preparationComplete: 'Preparation complete',
+    stepWaiting: 'Waiting for your payment',
+    stepLapsed: 'Not paid in time',
+    stepCancelled: 'This order will not be baked',
+    stepReady: 'Ready for your pickup window',
+    stepAddress: 'We send the exact address the morning of your slot',
+    stepCampus: 'At the campus pickup slot'
+  },
+  get lookupMiss(): string {
+    return withContact('Nothing matches that. Check the number.');
+  },
+  lookupError: 'We could not look that up. Check your connection and try again.',
+  statusError: 'We could not load your order. Check your connection and reload.',
+  statusMissing:
+    'We could not find that order. Use "Find my order" with your order number and mobile number.',
+  get waitlistDone(): string {
+    return 'You are on the waiting list. ' + ownerOr('We') + ' will message you.';
+  },
+  needName: 'We need a name for the box.',
+  needIg: 'Add your Instagram handle, like @yourhandle.',
+  badIg: 'That Instagram handle does not look right.',
+  needMobile: 'Add a mobile number we can reach you on, like 09XX XXX XXXX.',
+  needDate: 'Choose your pickup date.',
+  needTime: 'Choose your pickup time.',
+  needMethod: 'Choose how you will pay.',
+  needItems: 'Pick at least one cookie.',
+  payHelp:
+    'Pick how you will pay. You pay after you place the order, to the account you pick; there is nothing to attach here.',
+  get noMethods(): string {
+    return withContact('No payment method is set up yet.');
+  },
+  noDates: 'There are no pickup dates open right now.',
+  qrNote: 'Scan this to pay after you place your order.',
+  pickupLine: (when: string): string => `Pickup ${when}`,
+  placedTitle: 'Order received',
+  placedBody:
+    'Keep this order number and the status link: they are how you check on your order. Payment goes to the account you picked.',
+  payLater: (hours: number): string =>
+    `Your order is held for ${hours} ${hours === 1 ? 'hour' : 'hours'} until it is paid.`,
+  /** B4b: boxes, add-ons, the sampler and same-day. PLACEHOLDER wording, like the rest of this file. */
+  extras: {
+    boxesTitle: 'Boxes',
+    boxesHelp: 'Cookies that do not fill a box go in bags.',
+    boxLabel: (size: number, chargeText: string): string =>
+      `Box of ${size}${chargeText ? ' · ' + chargeText : ''}`,
+    addOnsTitle: 'Add-ons',
+    noteHelp: 'Add a message',
+    sameDayNotice: (percent: number): string =>
+      `Same-day pickup adds ${percent}% to your order. The shop works out the total when you place the order.`,
+    sameDayLabel: (percent: number): string => `same-day +${percent}%`,
+    sameDayNow: (percent: number): string =>
+      `That date is today now, so it is a same-day pickup: it adds ${percent}% to your order. Tap Place order again to go ahead, or pick another day.`,
+    priceNote: 'You pay for each item you pick. Boxes, add-ons and same-day pickup can add to it.',
+    noSlotsToday: 'No pickup times are left today. Pick another day.',
+    totalNote:
+      'Add-ons, box charges and any same-day extra are added by the shop to the total above when you place the order.',
+    box: 'Check your boxes: pick a size the shop offers, and no more cookies in boxes than you ordered.',
+    addOn: 'One of your add-ons is not offered or is listed twice.',
+    variant: 'Choose which design or number you want for that add-on.',
+    text: 'Write your message for the add-on that has one, one card at a time.',
+    textLong: 'Your message is too long.',
+    qty: 'You picked more of an add-on than the shop allows.',
+    sampler: 'You picked more sampler boxes than the shop allows in one order.',
+    /** ZC007: the owner switched a size or an add-on off after this page loaded. */
+    notOffered:
+      'A box size or add-on you picked is not offered any more. Its choices have been reloaded: check them and try again.',
+    loadFailed: 'Boxes and add-ons could not be loaded. You can still order cookies.',
+    placedLines: 'With'
+  } as const
+} as const;

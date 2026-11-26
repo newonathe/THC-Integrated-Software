@@ -1,0 +1,911 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import type * as React from 'react';
+import type { BazaarDayRow, BazaarEventView } from '@/lib/bazaar/live-bazaar-types';
+import { primaryActionOf, type PrimaryAction } from '@/lib/bazaar/event-rules';
+import { formIds, validateCostForm, validateFeeForm, validateTargetForm } from '@/lib/bazaar/forms';
+import { peso } from '@/lib/money/format';
+import { STAFF_COPY } from '@/lib/orders/staff-copy';
+import { PageTitle, Panel } from '@/components/ui/owner-kit';
+import { OpenRow } from '@/components/ui/owner-patterns';
+import { Banner } from '@/components/ui/banner';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { ErrorSummary } from '@/components/ui/error-summary';
+import { Field, SelectField } from '@/components/ui/field';
+import { ProgressBar } from '@/components/ui/progress-bar';
+import { ReceiptTable } from '@/components/ui/receipt-table';
+import { Sheet } from '@/components/ui/sheet';
+import { SectionHeader } from '@/components/ui/section-header';
+import { StatTile } from '@/components/ui/stat-tile';
+import { StatusPill } from '@/components/ui/status-pill';
+import { Notices } from './field';
+import { Figures } from './figure';
+import { CloseEventSheet } from './close-event-sheet';
+import { DeleteEventSheet } from './delete-event-sheet';
+import { PriceForm } from './price-form';
+import { ScratchTestSheet } from './scratch-test-sheet';
+import { StartDaySheet } from './start-day-sheet';
+import { useIssues } from './use-issues';
+import { useSave } from './use-save';
+
+const DAY_PILL = { Planned: 'planned', Selling: 'selling', Closed: 'closed' } as const;
+
+/** What the event page needs signal for, said once under the action it disables (spec rule 9). */
+const NEEDS_SIGNAL = 'Starting a day needs signal. Selling does not.';
+
+function figureOf(event: BazaarEventView, key: string) {
+  return event.figures.find((f) => f.key === key);
+}
+
+/** The stat row: revenue, profit (or "Cost pending"), cookies sold, and the profit against the target. */
+function Stats({ event }: { event: BazaarEventView }) {
+  const revenue = figureOf(event, 'revenue');
+  const profit = figureOf(event, 'profit');
+  const target = figureOf(event, 'target');
+  const partsOf = (f: typeof revenue) =>
+    f?.parts.map((p) => ({
+      label: p.detail ? `${p.label} · ${p.detail}` : p.label,
+      value: p.valueText
+    }));
+  const pending = event.profitCents === null;
+  const goal = event.targetCents;
+  const barLabel =
+    goal === null
+      ? 'No target set'
+      : event.profitCents === null
+        ? `Profit not known yet · target ${peso(goal)}`
+        : `${peso(Math.max(0, event.profitCents))} of ${peso(goal)} target profit`;
+  return (
+    <div className="grid grid-cols-2 items-start gap-3 lg:grid-cols-4">
+      <StatTile
+        label="Revenue"
+        value={event.figures.length ? (revenue?.cents ?? revenue?.valueText ?? null) : null}
+        format={peso}
+        parts={partsOf(revenue)}
+      />
+      <StatTile
+        label="Profit"
+        value={event.figures.length ? (pending ? 'Cost pending' : event.profitCents) : null}
+        format={peso}
+        tone={pending && event.figures.length ? 'warn' : undefined}
+        detail={profit?.note ?? undefined}
+        parts={partsOf(profit)}
+      />
+      <StatTile
+        label="Cookies sold"
+        value={event.figures.length ? event.soldCount : null}
+        detail={
+          event.itemsSold > 0
+            ? `and ${event.itemsSold.toLocaleString('en-PH')} other ${event.itemsSold === 1 ? 'item' : 'items'}`
+            : undefined
+        }
+      />
+      <div className="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface p-4">
+        <span className="text-label font-semibold text-ink-soft">Against the target</span>
+        <ProgressBar
+          value={Math.max(0, event.profitCents ?? 0)}
+          max={goal ?? 0}
+          label={barLabel}
+          overBy={
+            goal !== null && event.profitCents !== null ? peso(event.profitCents - goal) : undefined
+          }
+        />
+        {target && target.valueText !== 'No target set' ? (
+          <span className="text-caption text-ink-mute">{target.valueText}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** One row of the days timeline: the plan for a day that has not run, what happened for a day that has. */
+function DayRow({
+  day,
+  primary,
+  onStart,
+  noCatalogue
+}: {
+  day: BazaarDayRow;
+  primary: boolean;
+  onStart: (day: BazaarDayRow) => void;
+  /** HCB-004: her products and prices are not read, so a day is not started or replanned. */
+  noCatalogue: boolean;
+}) {
+  const noteId = 'day-note-' + day.id;
+  const noted = day.actionNote !== null;
+  const catalogueOnly = noCatalogue && !noted;
+  const blocked = noted || (noCatalogue && day.action === 'start');
+  const o = day.outcome;
+  const [pricing, setPricing] = useState(false);
+  return (
+    <li className="flex flex-col gap-2 rounded-card border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-body font-semibold text-ink">{day.dateText}</span>
+        <StatusPill status={DAY_PILL[day.word]} />
+      </div>
+      {o ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-body font-semibold text-ink">{o.revenueText}</span>
+          <span className="text-caption text-ink-soft">
+            {[o.soldText, o.leftText, o.carriedText, o.drawerText && `Drawer: ${o.drawerText}`]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
+        </div>
+      ) : (
+        <>
+          <span className="flex flex-wrap gap-x-3 text-body text-ink">
+            <span>{day.cookiesText}</span>
+            <span className="text-ink-mute">{day.floatText}</span>
+          </span>
+          {day.lines.length ? (
+            <ul aria-label={'Plan for ' + day.dateText} className="m-0 list-none p-0">
+              {day.lines.map((line) => (
+                <li key={line} className="text-caption text-ink-mute">
+                  {line}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      )}
+      {day.hint ? <p className="m-0 text-caption text-ink-mute">{day.hint}</p> : null}
+      <span className="flex flex-wrap gap-2">
+        {day.prices ? (
+          <Button variant="secondary" size="sm" onClick={() => setPricing(true)}>
+            Change a price
+          </Button>
+        ) : null}
+        {day.kitchenTransfer ? (
+          <Button variant="secondary" size="sm" onClick={day.kitchenTransfer}>
+            {day.word === 'Closed' ? 'Review transfers' : 'Transfer from kitchen'}
+          </Button>
+        ) : null}
+        {day.action && !primary ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={day.action === 'start' ? () => onStart(day) : day.run}
+            disabled={blocked}
+            reason={
+              catalogueOnly && day.action === 'start' ? STAFF_COPY.bazaarCatalogueReason : undefined
+            }
+            aria-describedby={noted && !primary ? noteId : undefined}
+          >
+            {day.action === 'start'
+              ? 'Start this day'
+              : day.action === 'resume'
+                ? 'Resume selling'
+                : day.action === 'review'
+                  ? 'Review and close'
+                  : 'See the review'}
+          </Button>
+        ) : null}
+        {day.takeOver ? (
+          <Button variant="primary" size="sm" onClick={day.takeOver}>
+            Sell on this device
+          </Button>
+        ) : null}
+        {day.edit ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={day.edit}
+            disabled={noCatalogue}
+            reason={noCatalogue ? STAFF_COPY.bazaarCatalogueReason : undefined}
+          >
+            Change the plan
+          </Button>
+        ) : null}
+      </span>
+      {day.actionNote && !primary ? (
+        <p id={noteId} className="m-0 text-caption text-ink-mute">
+          {day.actionNote}
+        </p>
+      ) : null}
+      {pricing && day.prices ? (
+        <Sheet
+          title="Change a price"
+          onClose={() => setPricing(false)}
+          footer={
+            <Button variant="secondary" onClick={() => setPricing(false)}>
+              Done
+            </Button>
+          }
+        >
+          <PriceForm prices={day.prices} />
+        </Sheet>
+      ) : null}
+    </li>
+  );
+}
+
+type OnSaving = ((saving: boolean) => void) | undefined;
+
+/** Tells the sheet around a form when a save starts and ends, so the sheet stays open until the answer is shown. */
+function useReportSaving(saving: boolean, onSaving: OnSaving) {
+  const last = useRef(false);
+  useEffect(() => {
+    if (last.current === saving) return;
+    last.current = saving;
+    onSaving?.(saving);
+  }, [saving, onSaving]);
+}
+
+/** The fees of the event, with the stall rent first, and a form to add one. */
+export function FeesSection({ event, onSaving }: { event: BazaarEventView; onSaving?: OnSaving }) {
+  const [label, setLabel] = useState('');
+  const [amount, setAmount] = useState('');
+  const [dayId, setDayId] = useState('');
+  const { error, saving, run } = useSave();
+  useReportSaving(saving, onSaving);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const issues = useIssues(() => validateFeeForm({ label, amount }));
+  const { addFee } = event;
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addFee || !issues.submit()) return;
+    const saved = await run(() => addFee({ label, amount, dayId: dayId === '' ? null : dayId }));
+    if (saved) {
+      setLabel('');
+      setAmount('');
+      issues.clear();
+    }
+  };
+  const lines = event.fees.map((f) => {
+    const [name = f.text, ...rest] = f.text.split(' · ');
+    return {
+      label: name,
+      detail: rest.join(' · ') || undefined,
+      value: f.amountCents,
+      onRemove: f.remove
+        ? () => {
+            const remove = f.remove;
+            setRemoveError(null);
+            if (remove) void remove().then(setRemoveError);
+          }
+        : undefined
+    };
+  });
+  return (
+    <section aria-labelledby="bazaar-fees" className="flex flex-col gap-2">
+      <SectionHeader title={<span id="bazaar-fees">Fees</span>} count={event.fees.length} />
+      {removeError ? <Banner tone="danger" title={removeError} /> : null}
+      <ReceiptTable
+        caption="Fees"
+        lines={lines}
+        total={event.feesTotalCents}
+        emptyText="No fees yet"
+        note="The stall rent is booked when the first day starts."
+      />
+      {addFee ? (
+        <form
+          {...issues.formProps}
+          onSubmit={(e) => void submit(e)}
+          aria-label="Add a fee"
+          noValidate
+          className="flex flex-col gap-3 rounded-card border border-line bg-surface p-4 md:max-w-xl"
+        >
+          <ErrorSummary errors={issues.summary} focusKey={issues.focusKey} />
+          {error ? <Banner tone="danger" title={error} /> : null}
+          <Field
+            id={formIds.feeLabel}
+            label="What for"
+            value={label}
+            maxLength={80}
+            autoComplete="off"
+            error={issues.messageOf(formIds.feeLabel)}
+            onChange={(e) => {
+              setLabel(e.target.value);
+              issues.touch(formIds.feeLabel);
+            }}
+            onBlur={() => issues.blur(formIds.feeLabel)}
+          />
+          <Field
+            id={formIds.feeAmount}
+            label="Amount"
+            mode="decimal"
+            prefix="₱"
+            value={amount}
+            autoComplete="off"
+            error={issues.messageOf(formIds.feeAmount)}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              issues.touch(formIds.feeAmount);
+            }}
+            onBlur={() => issues.blur(formIds.feeAmount)}
+          />
+          <SelectField
+            label="For"
+            value={dayId}
+            options={event.feeFor.map((o) => ({ value: o.dayId ?? '', label: o.text }))}
+            onChange={(e) => setDayId(e.target.value)}
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            busy={saving}
+            busyLabel="Saving…"
+            className="self-start"
+          >
+            Add the fee
+          </Button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
+
+function TargetSection({ event, onSaving }: { event: BazaarEventView; onSaving?: OnSaving }) {
+  const [pesos, setPesos] = useState(event.targetPesos);
+  const { error, saving, run } = useSave();
+  useReportSaving(saving, onSaving);
+  const issues = useIssues(() => validateTargetForm({ pesos }));
+  const { saveTarget } = event;
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (saveTarget && issues.submit()) await run(() => saveTarget(pesos));
+  };
+  return (
+    <section aria-labelledby="bazaar-target" className="flex flex-col gap-2">
+      <SectionHeader title={<span id="bazaar-target">Target profit</span>} />
+      <p className="m-0 text-body text-ink">{event.targetText}</p>
+      {saveTarget ? (
+        <form
+          {...issues.formProps}
+          onSubmit={(e) => void submit(e)}
+          aria-label="Target profit"
+          noValidate
+          className="flex flex-col gap-3 rounded-card border border-line bg-surface p-4 md:max-w-xl"
+        >
+          <ErrorSummary errors={issues.summary} focusKey={issues.focusKey} />
+          {error ? <Banner tone="danger" title={error} /> : null}
+          <Field
+            id={formIds.target}
+            label="Target"
+            mode="decimal"
+            prefix="₱"
+            hint="Leave blank for no target."
+            value={pesos}
+            autoComplete="off"
+            error={issues.messageOf(formIds.target)}
+            onChange={(e) => {
+              setPesos(e.target.value);
+              issues.touch(formIds.target);
+            }}
+            onBlur={() => issues.blur(formIds.target)}
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            busy={saving}
+            busyLabel="Saving…"
+            className="self-start"
+          >
+            Save the target
+          </Button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
+
+/** One flavour's cost per cookie as a receipt: what it is, where it came from, how the recipe makes it up. */
+function CostCard({
+  cost,
+  onSaving
+}: {
+  cost: BazaarEventView['costs'][number];
+  onSaving?: OnSaving;
+}) {
+  const [pesos, setPesos] = useState(cost.typedPesos);
+  const { error, saving, run } = useSave();
+  useReportSaving(saving, onSaving);
+  const field = formIds.cost(cost.productId);
+  const issues = useIssues(() => validateCostForm({ field, pesos }));
+  const { save } = cost;
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (save && issues.submit()) await run(() => save(pesos));
+  };
+  return (
+    <li className="flex flex-col gap-2 rounded-card border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+        <span className="text-body font-semibold text-ink">{cost.name}</span>
+        <span className="text-body font-semibold text-ink">{cost.unitText}</span>
+      </div>
+      <span className="text-caption text-ink-mute">
+        {cost.unitText === 'Cost pending'
+          ? 'No cost per cookie yet'
+          : `per cookie · ${cost.sourceText}`}
+      </span>
+      {cost.breakdown ? (
+        <details className="text-body">
+          <summary className="cursor-pointer text-label font-semibold text-brand-deep">
+            How the recipe makes it up
+          </summary>
+          <div className="pt-2">
+            <ReceiptTable
+              caption={'Recipe cost per cookie for ' + cost.name}
+              lines={cost.breakdown.slice(0, -1).map((l) => ({
+                label: l.label,
+                value: 0,
+                valueText: l.valueText
+              }))}
+              total={0}
+              totalText={cost.breakdown[cost.breakdown.length - 1]?.valueText}
+              totalLabel={cost.breakdown[cost.breakdown.length - 1]?.label}
+              note={cost.breakdownNote ?? undefined}
+            />
+          </div>
+        </details>
+      ) : cost.breakdownNote ? (
+        <p className="m-0 text-caption text-ink-mute">{cost.breakdownNote}</p>
+      ) : null}
+      {save ? (
+        <form
+          {...issues.formProps}
+          onSubmit={(e) => void submit(e)}
+          aria-label={'Cost per cookie for ' + cost.name}
+          noValidate
+          className="flex flex-col gap-3"
+        >
+          <ErrorSummary errors={issues.summary} focusKey={issues.focusKey} />
+          {error ? <Banner tone="danger" title={error} /> : null}
+          <Field
+            id={field}
+            label="Your cost per cookie"
+            mode="decimal"
+            prefix="₱"
+            hint="Leave blank to use the recipe's cost."
+            value={pesos}
+            autoComplete="off"
+            error={issues.messageOf(field)}
+            onChange={(e) => {
+              setPesos(e.target.value);
+              issues.touch(field);
+            }}
+            onBlur={() => issues.blur(field)}
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            size="sm"
+            busy={saving}
+            busyLabel="Saving…"
+            className="self-start"
+          >
+            Save the cost
+          </Button>
+        </form>
+      ) : (
+        <p className="m-0 text-caption text-ink-mute">
+          Change it in Make: open the product, then Edit product. Every bazaar uses that cost.
+        </p>
+      )}
+    </li>
+  );
+}
+
+/** The one forward action of the page, in the words of the state the event is in. */
+function PrimaryButton({
+  event,
+  action,
+  onStart,
+  onClose,
+  noCatalogue
+}: {
+  event: BazaarEventView;
+  action: PrimaryAction;
+  onStart: (day: BazaarDayRow) => void;
+  onClose: () => void;
+  noCatalogue: boolean;
+}) {
+  const day = (id: string) => event.days.find((d) => d.id === id);
+  if (action.kind === 'close') {
+    return (
+      <Button
+        variant="dark"
+        size="lg"
+        onClick={onClose}
+        disabled={event.finalise?.blocked != null}
+        reason={event.finalise?.blocked ?? undefined}
+        className="self-start"
+      >
+        Close the event
+      </Button>
+    );
+  }
+  if (action.kind === 'plan') {
+    const when = event.unplanned.find((u) => u.ymd === action.ymd)?.text ?? '';
+    return (
+      <Button
+        variant="primary"
+        size="lg"
+        onClick={() => event.planDay(action.ymd)}
+        disabled={noCatalogue}
+        reason={noCatalogue ? STAFF_COPY.bazaarCatalogueReason : undefined}
+        className="self-start"
+      >
+        {`Plan ${when} →`}
+      </Button>
+    );
+  }
+  const d = day(action.dayId);
+  if (!d) return null;
+  const blocked = d.actionNote !== null || (noCatalogue && action.kind === 'start');
+  if (action.kind === 'start') {
+    return (
+      <Button
+        variant="primary"
+        size="lg"
+        onClick={() => onStart(d)}
+        disabled={blocked}
+        reason={
+          blocked
+            ? d.actionNote === 'Needs signal'
+              ? NEEDS_SIGNAL
+              : (d.actionNote ?? STAFF_COPY.bazaarCatalogueReason)
+            : undefined
+        }
+        className="self-start"
+      >
+        {`Start the day →`}
+      </Button>
+    );
+  }
+  return (
+    <Button
+      variant="primary"
+      size="lg"
+      onClick={d.run}
+      disabled={blocked}
+      reason={blocked ? (d.actionNote ?? undefined) : undefined}
+      className="self-start"
+    >
+      {`Review and close →`}
+    </Button>
+  );
+}
+
+type CostsPanel = 'fees' | 'target' | 'costs';
+
+/**
+ * Fees, the target and the cost per cookie as one card of three rows (approved 19 October: consolidated, mockups
+ * K5nHQS8GjtBYGseDtYZDnZ). Each row says its figure and opens its form, unchanged, in a sheet.
+ */
+function CostsCard({ event }: { event: BazaarEventView }) {
+  const [open, setOpen] = useState<CostsPanel | null>(null);
+  // How many of the open sheet's forms are saving: the sheet stays open until each answer (or refusal) is on screen.
+  const [saving, setSaving] = useState(0);
+  const onSaving = (on: boolean) => setSaving((n) => Math.max(0, n + (on ? 1 : -1)));
+  const close = () => {
+    if (saving === 0) setOpen(null);
+  };
+  const n = event.fees.length;
+  const k = event.costs.length;
+  const rows: Array<{ key: CostsPanel; label: string; detail: string; value: string }> = [
+    {
+      key: 'fees',
+      label: 'Fees',
+      detail: n === 0 ? 'None yet' : n === 1 ? '1 fee' : `${n} fees`,
+      value: event.feesTotalText
+    },
+    {
+      key: 'target',
+      label: 'Target profit',
+      detail: event.saveTarget ? 'Tap to set or change it' : '',
+      value: event.targetText
+    },
+    ...(k > 0
+      ? [
+          {
+            key: 'costs' as const,
+            label: 'Cost per cookie',
+            detail: k === 1 ? '1 flavour on the table' : `${k} flavours on the table`,
+            value: ''
+          }
+        ]
+      : [])
+  ];
+  const title = { fees: 'Fees', target: 'Target profit', costs: 'Cost per cookie' };
+  return (
+    <section aria-labelledby="bazaar-costs" className="flex flex-col gap-2">
+      <SectionHeader title={<span id="bazaar-costs">Costs</span>} />
+      <ul
+        aria-label="Costs"
+        className="m-0 list-none overflow-hidden rounded-card border border-line bg-surface p-0"
+      >
+        {rows.map((r) => (
+          <li key={r.key} className="border-b border-divide last:border-b-0">
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              onClick={() => setOpen(r.key)}
+              className="flex min-h-14 w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-raise"
+            >
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="text-body font-semibold text-ink">{r.label}</span>
+                {r.detail ? <span className="text-caption text-ink-mute">{r.detail}</span> : null}
+              </span>
+              {r.value ? <span className="text-body font-semibold text-ink">{r.value}</span> : null}
+              <span aria-hidden="true" className="text-ink-faint">
+                ›
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {open ? (
+        <Sheet
+          title={title[open]}
+          onClose={close}
+          footer={
+            <Button
+              variant="secondary"
+              onClick={close}
+              disabled={saving > 0}
+              reason="Saving… The sheet closes once it is saved."
+            >
+              Done
+            </Button>
+          }
+        >
+          {open === 'fees' ? (
+            <FeesSection event={event} onSaving={onSaving} />
+          ) : open === 'target' ? (
+            <TargetSection event={event} onSaving={onSaving} />
+          ) : (
+            <ul aria-label="Cost per cookie" className="m-0 flex list-none flex-col gap-2 p-0">
+              {event.costs.map((c) => (
+                <CostCard key={c.productId} cost={c} onSaving={onSaving} />
+              ))}
+            </ul>
+          )}
+        </Sheet>
+      ) : null}
+    </section>
+  );
+}
+
+/** One booking: its hero and figures, then its days, fees, target and costs. A day is planned and started here. */
+export function EventPage({
+  event,
+  onEditEvents,
+  planning
+}: {
+  event: BazaarEventView;
+  /** Opens the form where an event is changed or switched off. */
+  onEditEvents?: () => void;
+  /** HCB-004: why a day cannot be planned or started (her products and prices are not read), with Try again. */
+  planning?: React.ReactNode;
+}) {
+  const noCatalogue = planning != null;
+  const [starting, setStarting] = useState<BazaarDayRow | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [scratching, setScratching] = useState(false);
+  const [settings, setSettings] = useState(false);
+  const primary = primaryActionOf(event);
+  const startDay = (day: BazaarDayRow) => {
+    if (noCatalogue) return;
+    if (day.startPrompt) setStarting(day);
+    else day.start(false);
+  };
+  // A day still selling blocks "Close the event": its close is reachable from there too.
+  const sellingDay = event.days.find((d) => d.word === 'Selling' && d.action === 'review');
+  // The primary action is not drawn a second time on its day's row.
+  const primaryDayId = primary && 'dayId' in primary ? primary.dayId : null;
+  if (closing && event.finalise)
+    return <CloseEventSheet finalise={event.finalise} onClose={() => setClosing(false)} />;
+  if (deleting && event.deleteEvent)
+    return (
+      <DeleteEventSheet
+        name={event.name}
+        remove={event.deleteEvent}
+        onClose={() => setDeleting(false)}
+      />
+    );
+  if (scratching && event.scratchTest)
+    return (
+      <ScratchTestSheet
+        name={event.name}
+        scratch={event.scratchTest}
+        onClose={() => setScratching(false)}
+      />
+    );
+  if (settings)
+    return (
+      <>
+        <PageTitle title="Bazaar settings" subtitle={`Settings for ${event.name}.`} />
+        <CostsCard event={event} />
+        {onEditEvents ? (
+          <Panel>
+            <OpenRow
+              title="Edit or switch off events"
+              detail="Name, place, dates and stall rent"
+              onOpen={onEditEvents}
+            />
+          </Panel>
+        ) : null}
+        <div>
+          <Button variant="secondary" onClick={() => setSettings(false)}>
+            Back to event
+          </Button>
+        </div>
+      </>
+    );
+  return (
+    <>
+      <PageTitle
+        title={event.name}
+        subtitle={`${event.placeText} · ${event.datesText}`}
+        actions={
+          <>
+            <Button variant="secondary" onClick={event.back}>
+              All events
+            </Button>
+            <Button variant="secondary" onClick={() => setSettings(true)}>
+              Settings
+            </Button>
+          </>
+        }
+      />
+      <Card variant="accent" as="section" aria-label="Event" className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill status={event.status} />
+          <span className="text-caption text-ink-mute">{event.rentText}</span>
+        </div>
+        <Notices notices={event.notices} />
+        {planning}
+        <Stats event={event} />
+        {primary ? (
+          <div className="flex flex-col gap-1">
+            <PrimaryButton
+              event={event}
+              action={primary}
+              onStart={startDay}
+              onClose={() => setClosing(true)}
+              noCatalogue={noCatalogue}
+            />
+          </div>
+        ) : null}
+      </Card>
+      <section aria-labelledby="bazaar-days" className="flex flex-col gap-2">
+        <SectionHeader
+          title={<span id="bazaar-days">Selling days</span>}
+          count={event.days.length}
+        />
+        {event.days.length === 0 ? (
+          <p className="m-0 text-body text-ink-mute">No day is planned yet.</p>
+        ) : (
+          <ol aria-label="Days" className="m-0 grid list-none grid-cols-1 gap-2 p-0 sm:grid-cols-2">
+            {event.days.map((day) => (
+              <DayRow
+                key={day.id}
+                day={day}
+                primary={day.id === primaryDayId}
+                onStart={startDay}
+                noCatalogue={noCatalogue}
+              />
+            ))}
+          </ol>
+        )}
+        {event.unplanned.length ? (
+          <div className="flex flex-col gap-2">
+            <span className="text-label font-semibold text-ink-soft">
+              {event.days.length === 0 ? 'Plan a day' : 'Plan another day'}
+            </span>
+            <span className="flex flex-wrap gap-2">
+              {event.unplanned.map((u) => (
+                <Button
+                  key={u.ymd}
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => event.planDay(u.ymd)}
+                  disabled={noCatalogue}
+                  reason={noCatalogue ? STAFF_COPY.bazaarCatalogueReason : undefined}
+                >
+                  {u.text}
+                </Button>
+              ))}
+            </span>
+          </div>
+        ) : null}
+      </section>
+      {event.figures.length > 0 ? (
+        <section aria-labelledby="bazaar-figures" className="flex flex-col gap-2">
+          <SectionHeader title={<span id="bazaar-figures">The event</span>} />
+          {event.figuresNote ? (
+            <p className="m-0 text-caption text-ink-mute">{event.figuresNote}</p>
+          ) : null}
+          <Figures figures={event.figures} label="The event" />
+        </section>
+      ) : null}
+      {event.finalise && primary?.kind !== 'close' ? (
+        <section aria-labelledby="bazaar-finalise" className="flex flex-col gap-2">
+          <SectionHeader title={<span id="bazaar-finalise">Close the event</span>} />
+          <p className="m-0 text-caption text-ink-mute">
+            Closing the event counts its sales, fees and stock in the books. It cannot be undone.
+          </p>
+          <Button
+            variant="dark"
+            onClick={() => setClosing(true)}
+            disabled={event.finalise.blocked !== null}
+            reason={event.finalise.blocked ?? undefined}
+            className="self-start"
+          >
+            Close the event
+          </Button>
+          {sellingDay && event.finalise.blocked !== null ? (
+            <Button
+              variant="secondary"
+              onClick={sellingDay.run}
+              disabled={sellingDay.actionNote !== null}
+              reason={sellingDay.actionNote ?? undefined}
+              className="self-start"
+            >
+              Review and close that day →
+            </Button>
+          ) : null}
+        </section>
+      ) : null}
+      {event.scratchTest ? (
+        <section aria-labelledby="bazaar-scratch" className="flex flex-col gap-2">
+          <SectionHeader title={<span id="bazaar-scratch">Scratch a test event</span>} />
+          <p className="m-0 text-caption text-ink-mute">
+            Only for an event that was a test. It takes the event&apos;s sales, fees and stock use
+            back out of Money and Stock.
+          </p>
+          <Button
+            variant="danger"
+            onClick={() => setScratching(true)}
+            disabled={event.scratchTest.blocked !== null}
+            reason={event.scratchTest.blocked ?? undefined}
+            className="self-start"
+          >
+            Scratch this test event
+          </Button>
+        </section>
+      ) : null}
+      {event.deleteEvent ? (
+        <section aria-labelledby="bazaar-delete" className="flex flex-col gap-2">
+          <SectionHeader title={<span id="bazaar-delete">End event</span>} />
+          <p className="m-0 text-caption text-ink-mute">
+            This event has no sales. Deleting it removes its day plans and costs; Money and Stock do
+            not change.
+          </p>
+          <Button
+            variant="danger"
+            onClick={() => setDeleting(true)}
+            disabled={event.deleteEvent.blocked !== null}
+            reason={event.deleteEvent.blocked ?? undefined}
+            className="self-start"
+          >
+            Delete this event
+          </Button>
+        </section>
+      ) : null}
+      {starting?.startPrompt ? (
+        <StartDaySheet
+          prompt={starting.startPrompt}
+          onConfirm={() => {
+            starting.start(true);
+            setStarting(null);
+          }}
+          onClose={() => setStarting(null)}
+          onSetFloat={
+            starting.edit
+              ? () => {
+                  starting.edit?.();
+                  setStarting(null);
+                }
+              : null
+          }
+        />
+      ) : null}
+    </>
+  );
+}

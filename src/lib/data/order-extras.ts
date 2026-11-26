@@ -1,0 +1,475 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Database, Json } from '@/lib/types/database';
+import { classifySaveError, type SaveOutcome } from '@/lib/data/payments';
+
+/**
+ * The owner's boxes, add-ons, sampler limit and same-day surcharge (B4a; `get_order_extras` /
+ * `save_order_extras`, migration 20260101004000). Money is centavos here, exactly as the database
+ * holds it; the form converts to and from pesos in one place (`src/lib/money.ts`). The database
+ * enforces every bound; `orderExtrasError` mirrors them so a sure refusal is never sent.
+ */
+export type OrderExtrasClient = Pick<SupabaseClient<Database>, 'rpc'>;
+
+export interface BoxSize {
+  size: number;
+  charge_cents: number;
+  active: boolean;
+}
+
+export interface AddOn {
+  id: string;
+  name: string;
+  price_cents: number;
+  active: boolean;
+  /** Choices such as the sticker designs; empty means the add-on has none. */
+  variants: string[];
+  /** The label of the customer's text box (a note-card message); null means no text box. */
+  text_label: string | null;
+  text_max: number;
+  max_qty: number;
+}
+
+/** Paths are kept beside add-ons, keyed by add-on id and exact customer choice. */
+export type ChoiceImageMap = Record<string, Record<string, string>>;
+
+export interface OrderExtrasFields {
+  same_day_enabled: boolean;
+  same_day_percent: number;
+  same_day_on_extras: boolean;
+  /** A flavour of kind `set`, or null. */
+  sampler_product_id: string | null;
+  sampler_max_qty: number;
+  /**
+   * The cookies in the sampler box, in the owner's order (migration 20260101007000). Null when the
+   * database does not have the list yet: the save then leaves the key out and the saved value stands.
+   */
+  sampler_flavours?: string[] | null;
+  box_sizes: BoxSize[];
+  add_ons: AddOn[];
+}
+
+export interface OrderExtras extends OrderExtrasFields {
+  updated_at: string;
+  /** Missing only when reading a database that predates choice photos. */
+  choice_images: ChoiceImageMap;
+}
+
+const ADD_ON_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+const CHOICE_IMAGE_PATH = /^flavours\/[0-9a-f]{32}\.(?:webp|jpg)$/;
+
+const whole = (v: unknown, min: number, max: number): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** The database's answer as one typed value; anything unexpected is null (the form then does not open). */
+export function parseOrderExtras(json: Json | null | undefined): OrderExtras | null {
+  if (!isObject(json)) return null;
+  const r = json;
+  if (
+    typeof r.same_day_enabled !== 'boolean' ||
+    typeof r.same_day_on_extras !== 'boolean' ||
+    !whole(r.same_day_percent, 0, 100) ||
+    !whole(r.sampler_max_qty, 1, 20) ||
+    (r.sampler_product_id !== null && typeof r.sampler_product_id !== 'string') ||
+    typeof r.updated_at !== 'string' ||
+    !Array.isArray(r.box_sizes) ||
+    !Array.isArray(r.add_ons)
+  )
+    return null;
+  const flavours = r.sampler_flavours;
+  if (
+    flavours !== undefined &&
+    (!Array.isArray(flavours) || !flavours.every((f) => typeof f === 'string'))
+  )
+    return null;
+  const boxes: BoxSize[] = [];
+  for (const b of r.box_sizes) {
+    if (!isObject(b) || !whole(b.size, 2, 48) || !whole(b.charge_cents, 0, 100000)) return null;
+    if (typeof b.active !== 'boolean') return null;
+    boxes.push({ size: b.size, charge_cents: b.charge_cents, active: b.active });
+  }
+  const addOns: AddOn[] = [];
+  for (const a of r.add_ons) {
+    if (
+      !isObject(a) ||
+      typeof a.id !== 'string' ||
+      typeof a.name !== 'string' ||
+      typeof a.active !== 'boolean' ||
+      !whole(a.price_cents, 0, 1_000_000) ||
+      !whole(a.text_max, 1, 300) ||
+      !whole(a.max_qty, 1, 50) ||
+      (a.text_label !== null && typeof a.text_label !== 'string') ||
+      !Array.isArray(a.variants) ||
+      !a.variants.every((v) => typeof v === 'string')
+    )
+      return null;
+    addOns.push({
+      id: a.id,
+      name: a.name,
+      price_cents: a.price_cents,
+      active: a.active,
+      variants: a.variants as string[],
+      text_label: a.text_label as string | null,
+      text_max: a.text_max,
+      max_qty: a.max_qty
+    });
+  }
+  const choiceImages = parseChoiceImages(r.choice_images, addOns);
+  if (choiceImages === null) return null;
+  return {
+    same_day_enabled: r.same_day_enabled,
+    same_day_percent: r.same_day_percent,
+    same_day_on_extras: r.same_day_on_extras,
+    sampler_product_id: r.sampler_product_id as string | null,
+    sampler_max_qty: r.sampler_max_qty,
+    sampler_flavours: flavours === undefined ? null : (flavours as string[]),
+    box_sizes: boxes,
+    add_ons: addOns,
+    choice_images: choiceImages,
+    updated_at: r.updated_at
+  };
+}
+
+/** Old installations have no image column; obsolete choice associations are safely ignored. */
+function parseChoiceImages(
+  value: unknown,
+  addOns: Array<{ id: string; variants: string[] }>
+): ChoiceImageMap | null {
+  if (value === undefined) return {};
+  if (!isObject(value)) return null;
+  const out: ChoiceImageMap = {};
+  for (const [id, choices] of Object.entries(value)) {
+    if (!isObject(choices)) return null;
+    const addon = addOns.find((item) => item.id === id);
+    const current: Record<string, string> = {};
+    for (const [variant, path] of Object.entries(choices)) {
+      if (!addon?.variants.includes(variant)) continue;
+      if (typeof path !== 'string' || !CHOICE_IMAGE_PATH.test(path)) return null;
+      current[variant] = path;
+    }
+    if (addon && Object.keys(current).length) out[id] = current;
+  }
+  return out;
+}
+
+/** The same bounds `save_order_extras` enforces. Null means the configuration is acceptable. */
+export function orderExtrasError(f: OrderExtrasFields): string | null {
+  if (!whole(f.same_day_percent, 0, 100))
+    return 'The same-day extra is a whole number from 0 to 100.';
+  if (!whole(f.sampler_max_qty, 1, 20)) return 'The sampler limit is a whole number from 1 to 20.';
+  if (f.sampler_flavours) {
+    if (f.sampler_flavours.length > 24) return 'A sampler box holds at most 24 flavours.';
+    if (new Set(f.sampler_flavours).size !== f.sampler_flavours.length)
+      return 'Each sampler flavour can be chosen once.';
+  }
+  if (f.box_sizes.length > 12) return 'At most 12 box sizes.';
+  const sizes = new Set<number>();
+  for (const b of f.box_sizes) {
+    if (!whole(b.size, 2, 48)) return 'A box holds 2 to 48 cookies.';
+    if (!whole(b.charge_cents, 0, 100000)) return 'A box charge is from ₱0 to ₱1,000.';
+    if (sizes.has(b.size)) return 'Each box size can be listed once.';
+    sizes.add(b.size);
+  }
+  if (f.add_ons.length > 20) return 'At most 20 add-ons.';
+  const ids = new Set<string>();
+  for (const a of f.add_ons) {
+    if (!ADD_ON_ID.test(a.id)) return 'An add-on needs a name with letters or numbers in it.';
+    if (ids.has(a.id)) return 'Two add-ons share a name. Rename one.';
+    ids.add(a.id);
+    const name = a.name.trim();
+    if (name.length < 1 || name.length > 40 || CONTROL.test(name))
+      return 'An add-on name is 1 to 40 characters.';
+    if (!whole(a.price_cents, 0, 1_000_000)) return 'An add-on price is from ₱0 to ₱10,000.';
+    if (!whole(a.max_qty, 1, 50)) return 'The most of one add-on is 1 to 50.';
+    if (!whole(a.text_max, 1, 300)) return 'A message is 1 to 300 characters long.';
+    if (a.text_label !== null) {
+      const label = a.text_label.trim();
+      if (label.length < 1 || label.length > 30 || CONTROL.test(label))
+        return 'A message label is 1 to 30 characters.';
+    }
+    if (a.variants.length > 12) return 'An add-on has at most 12 choices.';
+    const seen = new Set<string>();
+    for (const v of a.variants.map((x) => x.trim())) {
+      if (v.length < 1 || v.length > 20 || CONTROL.test(v))
+        return 'A choice such as a sticker number is 1 to 20 characters.';
+      if (seen.has(v)) return 'A choice is listed twice.';
+      seen.add(v);
+    }
+  }
+  return null;
+}
+
+/** An add-on id from a name: lowercase letters, digits and dashes, at most 32 characters. */
+export function addOnId(name: string, taken: ReadonlySet<string>): string {
+  const base =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 32)
+      .replace(/-+$/g, '') || 'add-on';
+  if (!taken.has(base)) return base;
+  for (let n = 2; n < 100; n += 1) {
+    const suffix = '-' + n;
+    const candidate = base.slice(0, 32 - suffix.length).replace(/-+$/g, '') + suffix;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return base;
+}
+
+export async function fetchOrderExtras(client: OrderExtrasClient): Promise<OrderExtras | null> {
+  const { data, error } = await client.rpc('get_order_extras');
+  if (error) throw new Error('order extras load failed: ' + (error.code || error.message));
+  return parseOrderExtras(data);
+}
+
+export async function saveOrderExtras(
+  client: OrderExtrasClient,
+  fields: OrderExtrasFields,
+  expectedUpdatedAt: string
+): Promise<SaveOutcome> {
+  try {
+    const { error } = await client.rpc('save_order_extras', {
+      p_extras: {
+        same_day_enabled: fields.same_day_enabled,
+        same_day_percent: fields.same_day_percent,
+        same_day_on_extras: fields.same_day_on_extras,
+        sampler_product_id: fields.sampler_product_id,
+        sampler_max_qty: fields.sampler_max_qty,
+        // Only a database that has the list is sent it; an older one refuses an unknown key.
+        ...(Array.isArray(fields.sampler_flavours)
+          ? { sampler_flavours: [...fields.sampler_flavours] }
+          : {}),
+        box_sizes: fields.box_sizes.map((b) => ({
+          size: b.size,
+          charge_cents: b.charge_cents,
+          active: b.active
+        })),
+        add_ons: fields.add_ons.map((a) => ({
+          id: a.id,
+          name: a.name.trim(),
+          price_cents: a.price_cents,
+          active: a.active,
+          variants: a.variants.map((v) => v.trim()),
+          text_label: a.text_label === null ? null : a.text_label.trim(),
+          text_max: a.text_max,
+          max_qty: a.max_qty
+        }))
+      },
+      p_expected_updated_at: expectedUpdatedAt
+    });
+    return classifySaveError(error);
+  } catch {
+    return 'offline';
+  }
+}
+
+/** New clients save choices and their separate image associations atomically. Legacy saves above stay seven/eight-key. */
+export async function saveOrderExtrasWithImages(
+  client: OrderExtrasClient,
+  fields: OrderExtrasFields,
+  choiceImages: ChoiceImageMap,
+  expectedUpdatedAt: string
+): Promise<SaveOutcome> {
+  try {
+    const { error } = await client.rpc('save_order_extras_with_images', {
+      p_extras: buildOrderExtrasPayload(fields),
+      p_choice_images: choiceImages,
+      p_expected_updated_at: expectedUpdatedAt
+    });
+    return classifySaveError(error);
+  } catch {
+    return 'offline';
+  }
+}
+
+function buildOrderExtrasPayload(fields: OrderExtrasFields): Json {
+  return {
+    same_day_enabled: fields.same_day_enabled,
+    same_day_percent: fields.same_day_percent,
+    same_day_on_extras: fields.same_day_on_extras,
+    sampler_product_id: fields.sampler_product_id,
+    sampler_max_qty: fields.sampler_max_qty,
+    ...(Array.isArray(fields.sampler_flavours)
+      ? { sampler_flavours: [...fields.sampler_flavours] }
+      : {}),
+    box_sizes: fields.box_sizes.map((b) => ({
+      size: b.size,
+      charge_cents: b.charge_cents,
+      active: b.active
+    })),
+    add_ons: fields.add_ons.map((a) => ({
+      id: a.id,
+      name: a.name.trim(),
+      price_cents: a.price_cents,
+      active: a.active,
+      variants: a.variants.map((v) => v.trim()),
+      text_label: a.text_label === null ? null : a.text_label.trim(),
+      text_max: a.text_max,
+      max_qty: a.max_qty
+    }))
+  };
+}
+
+// ---------------------------------------------------------------- the customer's side (B4b)
+
+/** What a customer's checkout builds its pickers from (`get_shop_extras()`: active items only). */
+export interface ShopExtras {
+  sameDay: { enabled: boolean; percent: number; onExtras: boolean };
+  /** `flavours`: the cookies in the sampler box, published ones only, in the owner's order; empty when none are chosen. */
+  sampler: { productId: string | null; maxQty: number; flavours?: string[] };
+  boxes: Array<{ size: number; chargeCents: number }>;
+  addOns: Array<{
+    id: string;
+    name: string;
+    priceCents: number;
+    variants: string[];
+    textLabel: string | null;
+    textMax: number;
+    maxQty: number;
+    choiceImages: Record<string, string>;
+  }>;
+}
+
+/** Strict: anything unexpected is no extras at all (the checkout then offers none), never a half-shown picker. */
+export function parseShopExtras(json: unknown): ShopExtras | null {
+  if (!isObject(json)) return null;
+  const { same_day: sd, sampler, boxes, add_ons: addOns } = json;
+  if (!isObject(sd) || !isObject(sampler) || !Array.isArray(boxes) || !Array.isArray(addOns))
+    return null;
+  if (
+    typeof sd.enabled !== 'boolean' ||
+    typeof sd.on_extras !== 'boolean' ||
+    !whole(sd.percent, 0, 100) ||
+    !whole(sampler.max_qty, 1, 20) ||
+    (sampler.product_id !== null && typeof sampler.product_id !== 'string') ||
+    (sampler.flavours !== undefined &&
+      (!Array.isArray(sampler.flavours) || !sampler.flavours.every((f) => typeof f === 'string')))
+  )
+    return null;
+  const outBoxes: ShopExtras['boxes'] = [];
+  for (const b of boxes) {
+    if (!isObject(b) || !whole(b.size, 2, 48) || !whole(b.charge_cents, 0, 100000)) return null;
+    outBoxes.push({ size: b.size, chargeCents: b.charge_cents });
+  }
+  const outAddOns: ShopExtras['addOns'] = [];
+  for (const a of addOns) {
+    if (
+      !isObject(a) ||
+      typeof a.id !== 'string' ||
+      !ADD_ON_ID.test(a.id) ||
+      typeof a.name !== 'string' ||
+      !whole(a.price_cents, 0, 1_000_000) ||
+      !whole(a.text_max, 1, 300) ||
+      !whole(a.max_qty, 1, 50) ||
+      (a.text_label !== null && typeof a.text_label !== 'string') ||
+      !Array.isArray(a.variants) ||
+      !a.variants.every((v) => typeof v === 'string')
+    )
+      return null;
+    const choiceImages = parseChoiceImages(
+      { [a.id]: a.choice_images === undefined ? {} : a.choice_images },
+      [{ id: a.id, variants: a.variants as string[] }]
+    );
+    if (!choiceImages) return null;
+    outAddOns.push({
+      id: a.id,
+      name: a.name,
+      priceCents: a.price_cents,
+      variants: a.variants as string[],
+      textLabel: a.text_label as string | null,
+      textMax: a.text_max,
+      maxQty: a.max_qty,
+      choiceImages: choiceImages[a.id] ?? {}
+    });
+  }
+  return {
+    sameDay: { enabled: sd.enabled, percent: sd.percent, onExtras: sd.on_extras },
+    sampler: {
+      productId: sampler.product_id as string | null,
+      maxQty: sampler.max_qty,
+      flavours: (sampler.flavours as string[] | undefined) ?? []
+    },
+    boxes: outBoxes.sort((a, b) => a.size - b.size),
+    addOns: outAddOns
+  };
+}
+
+export async function fetchShopExtras(client: OrderExtrasClient): Promise<ShopExtras | null> {
+  const { data, error } = await client.rpc('get_shop_extras');
+  if (error) throw new Error('shop extras load failed: ' + (error.code || error.message));
+  return parseShopExtras(data);
+}
+
+/**
+ * Separates an add-on id from its design in a selection key. The server refuses control characters in a
+ * design, so no design can contain it (a design with a `|` in it would have been cut in two).
+ */
+export const LINE_SEP = '\u001f';
+
+/** One add-on line the customer chose: a design (variant) and how many, plus a message where the add-on has one. */
+export interface AddOnLine {
+  id: string;
+  variant: string;
+  qty: number;
+  text: string;
+}
+export interface BoxLine {
+  size: number;
+  qty: number;
+}
+
+/**
+ * The same checks `place_order` makes on the extras (rules box-size, box-fit, sampler-cap, addon-*),
+ * so a sure refusal is never sent. `cookieQty` is the cookies in the cart (the sampler and other sets do
+ * not count and cannot be boxed); `samplerQty` the sampler boxes. Null means acceptable.
+ */
+export function extrasSelectionError(
+  extras: ShopExtras,
+  sel: { addOns: AddOnLine[]; boxes: BoxLine[] },
+  cart: { cookieQty: number; samplerQty: number },
+  words: {
+    box: string;
+    addOn: string;
+    variant: string;
+    text: string;
+    textLong: string;
+    qty: string;
+    sampler: string;
+  }
+): string | null {
+  if (extras.sampler.productId && cart.samplerQty > extras.sampler.maxQty) return words.sampler;
+  let boxed = 0;
+  const sizes = new Set<number>();
+  for (const b of sel.boxes) {
+    if (!extras.boxes.some((x) => x.size === b.size) || sizes.has(b.size)) return words.box;
+    sizes.add(b.size);
+    boxed += b.size * b.qty;
+  }
+  if (boxed > cart.cookieQty) return words.box;
+  const totals = new Map<string, number>();
+  const seen = new Set<string>();
+  for (const l of sel.addOns) {
+    const cfg = extras.addOns.find((a) => a.id === l.id);
+    if (!cfg) return words.addOn;
+    if (
+      cfg.variants.length > 0 !== (l.variant !== '') ||
+      (l.variant && !cfg.variants.includes(l.variant))
+    )
+      return words.variant;
+    const text = l.text.trim();
+    if (cfg.textLabel === null ? text !== '' : text === '' || l.qty !== 1) return words.text;
+    if (text.length > cfg.textMax) return words.textLong;
+    const key = l.id + LINE_SEP + l.variant + LINE_SEP + text;
+    if (seen.has(key)) return words.addOn;
+    seen.add(key);
+    totals.set(l.id, (totals.get(l.id) ?? 0) + l.qty);
+  }
+  for (const [id, qty] of totals) {
+    const cfg = extras.addOns.find((a) => a.id === id);
+    if (!cfg || qty > cfg.maxQty) return words.qty;
+  }
+  return null;
+}

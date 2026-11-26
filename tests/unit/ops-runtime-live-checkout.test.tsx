@@ -1,0 +1,1463 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
+import { cleanup, render } from '@testing-library/react';
+
+let live = true;
+vi.mock('@/lib/config/app-mode', () => ({ isLiveMode: () => live }));
+
+import { OpsRuntime } from '@/store/ops-runtime';
+import { CheckoutScreen } from '@/components/screens/checkout';
+import { OrderStatusScreen } from '@/components/screens/order-status';
+import { LiveFormHost } from '@/components/live/live-form-host';
+import { LiveOrderRoute } from '@/components/app/live-order-route';
+import { FindMyOrderScreen } from '@/components/screens/find-my-order';
+import { LiveShopFooter } from '@/components/live/live-shop-footer';
+import { PAY_ACCOUNTS, replacePayAccounts } from '@/store/engine/ops-engine';
+import type { OrderClient } from '@/lib/data/orders';
+import type { PaymentClient, UploadClient } from '@/lib/data/payments';
+import { DROP_CLOSED_MESSAGE } from '@/lib/rules/capacity';
+import type { ScreenKey } from '@/lib/screens';
+
+/**
+ * B2: the live checkout, "Find my order", the waiting list and the status page. Every branch of
+ * the new runtime code has a test; a mutation comment says what breaking it does.
+ */
+const PORTED = PAY_ACCOUNTS.map((m) => ({ ...m }));
+const TOKEN = 'b'.repeat(64);
+const RULES = {
+  pickup_days: [1, 4],
+  lead_min_days: 1,
+  lead_max_days: 14,
+  pickup_from_hour: 9,
+  pickup_cutoff_hour: 17,
+  campus_from: '14:00',
+  campus_to: '15:30',
+  unpaid_hold_hours: 24
+};
+const PLACED = {
+  order_no: 'HC-1001',
+  status_token: TOKEN,
+  total_cents: 45000,
+  pickup_date: '2026-10-08',
+  pickup_window: '10:30',
+  replayed: false
+};
+const STATUS = {
+  order_no: 'HC-1001',
+  state: 'Payment review',
+  pay_state: 'unpaid',
+  pay_method: 'GCash',
+  total_cents: 45000,
+  pickup_date: '2026-10-08',
+  pickup_window: '10:30',
+  placed_at: '2026-10-05T01:00:00Z',
+  hold_expires_at: '2026-10-06T01:00:00Z',
+  items: [
+    { product_id: 'dcf', name: 'Dark Choc Chip', qty: 2, unit_price_cents: 22500 },
+    { product_id: 'gone', name: 'Retired flavour', qty: 1, unit_price_cents: 20000 }
+  ]
+};
+
+type Reply = { data: unknown; error: unknown } | Error;
+type Handlers = Partial<Record<string, (args: Record<string, unknown>) => Reply | Promise<Reply>>>;
+
+function fakeClient(handlers: Handlers = {}) {
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const rpc = vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+    calls.push({ name, args });
+    const fallback: Handlers = {
+      get_shop_order_rules: () => ({ data: RULES, error: null }),
+      get_shop_payment_info: () => ({
+        data: {
+          methods: [{ id: 'gcash', label: 'GCash', number: '0999', name: 'Owner', qr: '' }],
+          texts: {
+            registration_badge: '',
+            tin_line: '',
+            invoice_note: '',
+            allergen_note: 'Contains milk.',
+            updated_at: null
+          }
+        },
+        error: null
+      }),
+      place_order: () => ({ data: [PLACED], error: null }),
+      order_status: () => ({ data: STATUS, error: null }),
+      find_order: () => ({ data: TOKEN, error: null }),
+      join_waitlist: () => ({ data: [{ waitlist_id: 'w', replayed: false }], error: null })
+    };
+    const handler = handlers[name] ?? fallback[name];
+    const reply = handler ? await handler(args) : { data: null, error: null };
+    if (reply instanceof Error) throw reply;
+    return reply;
+  });
+  const client = { rpc, storage: { from: () => ({ upload: vi.fn() }) } } as unknown as OrderClient &
+    PaymentClient &
+    UploadClient;
+  return { client, rpc, calls };
+}
+
+const flush = () => act(async () => void (await new Promise((r) => setTimeout(r, 0))));
+
+async function mounted(
+  handlers: Handlers = {},
+  screen: ScreenKey = 'checkout',
+  backend: string | null = null
+) {
+  const ref: { current: OpsRuntime | null } = { current: null };
+  render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+  const runtime = ref.current!;
+  const fake = fakeClient(handlers);
+  await act(async () => {
+    await runtime.loadShopPayment(fake.client);
+    await runtime.loadShopOrders(fake.client, backend);
+  });
+  act(() =>
+    runtime.setState({ screen, cust: { ...(runtime.state.cust as object), box: { dcf: 2 } } })
+  );
+  return { runtime, ...fake };
+}
+
+const switchCheckoutSource = (runtime: OpsRuntime, client: OrderClient | null) =>
+  act(async () => {
+    await runtime.loadShopOrders(client);
+  });
+
+const custSet = (runtime: OpsRuntime, key: string, value: string) =>
+  act(() =>
+    (runtime as unknown as { custSet: (k: string, v: string) => void }).custSet(key, value)
+  );
+
+async function fillForm(runtime: OpsRuntime, over: Record<string, string> = {}) {
+  const dates = runtime.renderVals().liveCheckout!.dates;
+  const values: Record<string, string> = {
+    name: 'Ana',
+    ig: '@ana.bakes',
+    mobile: '0917 123 4567',
+    pickupDate: dates[0]!.value,
+    pickupTime: '10:30',
+    pay: 'GCash',
+    ...over
+  };
+  for (const [k, v] of Object.entries(values)) custSet(runtime, k, v);
+}
+
+const submit = async (runtime: OpsRuntime) => {
+  await act(async () => {
+    runtime.renderVals().cust.submit();
+  });
+  await flush();
+};
+const placeCalls = (calls: Array<{ name: string; args: Record<string, unknown> }>) =>
+  calls
+    .filter((c) => c.name === 'place_order')
+    .map((c) => c.args.p_order as Record<string, unknown>);
+
+describe('B2: the live checkout', () => {
+  beforeEach(() => {
+    live = true;
+    sessionStorage.clear();
+  });
+  afterEach(() => {
+    cleanup();
+    replacePayAccounts(PORTED.map((m) => ({ ...m })));
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('restores the exact backend-scoped request after a new runtime without sending automatically', async () => {
+    const backend = 'https://recovery.example';
+    const first = await mounted(
+      { place_order: () => new TypeError('Lost reply') },
+      'checkout',
+      backend
+    );
+    await fillForm(first.runtime);
+    await submit(first.runtime);
+    const original = placeCalls(first.calls)[0];
+    cleanup();
+    const second = await mounted({}, 'checkout', backend);
+    expect(placeCalls(second.calls)).toEqual([]);
+    expect(second.runtime.renderVals().liveCheckout!.fields.name).toBe('Ana');
+    expect(second.runtime.renderVals().liveCheckout!.frozen).toBe(true);
+    await submit(second.runtime);
+    expect(placeCalls(second.calls)).toEqual([original]);
+    expect(second.runtime.renderVals().liveCheckout!.placed?.orderNo).toBe(PLACED.order_no);
+  });
+
+  it('keeps a saved request out of a different backend and refuses to retag a cached client', async () => {
+    const first = await mounted(
+      { place_order: () => new TypeError('Lost reply') },
+      'checkout',
+      'https://one.example'
+    );
+    await fillForm(first.runtime);
+    await submit(first.runtime);
+    const original = placeCalls(first.calls)[0];
+    await act(async () => {
+      expect(await first.runtime.loadShopOrders(first.client, 'https://two.example')).toBe(false);
+    });
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('');
+    await submit(first.runtime);
+    expect(placeCalls(first.calls)).toEqual([original]);
+    await act(async () => {
+      await first.runtime.loadShopOrders(first.client, 'https://one.example');
+    });
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('Ana');
+    cleanup();
+    const second = await mounted({}, 'checkout', 'https://two.example');
+    expect(second.runtime.renderVals().liveCheckout!.frozen).toBe(false);
+    expect(second.runtime.renderVals().liveCheckout!.fields.name).toBe('');
+    expect(placeCalls(second.calls)).toEqual([]);
+  });
+
+  it('preserves an unreadable saved copy and offers storage-only recovery with sending disabled', async () => {
+    const key = 'hc-order-recovery-v1:https%3A%2F%2Frecovery.example';
+    sessionStorage.setItem(key, '{broken');
+    const { runtime, calls } = await mounted({}, 'checkout', 'https://recovery.example');
+    const ui = render(<CheckoutScreen v={runtime.renderVals()} />);
+    expect(ui.getByRole('button', { name: 'Place order' }).hasAttribute('disabled')).toBe(true);
+    expect(ui.getByRole('button', { name: 'Retry checkout recovery' })).toBeTruthy();
+    act(() => runtime.renderVals().liveCheckout!.recovery!.retry());
+    expect(sessionStorage.getItem(key)).toBe('{broken');
+    expect(placeCalls(calls)).toEqual([]);
+  });
+
+  it('keeps a restored receipt when viewing the order and clears it only for an explicit new order', async () => {
+    const first = await mounted({}, 'checkout', 'https://recovery.example');
+    await fillForm(first.runtime);
+    await submit(first.runtime);
+    cleanup();
+    const second = await mounted({}, 'checkout', 'https://recovery.example');
+    const placed = second.runtime.renderVals().liveCheckout!.placed!;
+    expect(placed?.orderNo).toBe(PLACED.order_no);
+    expect(placeCalls(second.calls)).toEqual([]);
+    const before = sessionStorage.length;
+    await act(async () => placed.seeOrder());
+    expect(sessionStorage.length).toBe(before);
+    act(() => second.runtime.setState({ screen: 'checkout' }));
+    act(() => second.runtime.renderVals().liveCheckout!.placed!.orderAgain());
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it('renders the live slot: her fields, no email, no amount, no screenshot', async () => {
+    const { runtime } = await mounted();
+    const text = render(<CheckoutScreen v={runtime.renderVals()} />).container.textContent ?? '';
+    for (const wanted of [
+      'Your order',
+      'Name',
+      'Instagram handle',
+      'Contact number',
+      'Pickup',
+      'Payment',
+      'Place order'
+    ])
+      expect(text).toContain(wanted);
+    for (const gone of [
+      'Email',
+      'Amount you sent',
+      'Payment screenshot',
+      'Attach your screenshot',
+      'Submit order',
+      'Cine verifies'
+    ])
+      expect(text).not.toContain(gone);
+    // Mutation: dropping the guarded branch from checkout.tsx brings the ported email and screenshot back.
+  });
+
+  it('demo mode keeps the ported checkout and the engine’s own submit', () => {
+    live = false;
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    const v = ref.current!.renderVals();
+    expect(v.liveCheckout).toBeUndefined();
+    const text = render(<CheckoutScreen v={v} />).container.textContent ?? '';
+    expect(text).toContain('Payment screenshot');
+    expect(text).toContain('Submit order');
+    expect(text).toContain('Your slot is held once Cine verifies the payment.');
+    // Mutation: an unguarded bareFrame or a live-only override that runs in demo mode changes this text.
+  });
+
+  it('demo mode still runs the engine’s own submit, which validates and never calls the database', async () => {
+    live = false;
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    const fake = fakeClient();
+    await act(async () => {
+      await ref.current!.loadShopOrders(fake.client);
+    });
+    act(() => ref.current!.renderVals().cust.submit());
+    expect(
+      String(
+        (ref.current!.state.toast as { msg?: string } | null)?.msg ??
+          JSON.stringify(ref.current!.state.toast)
+      )
+    ).toMatch(/still need filling in/);
+    expect(fake.rpc).not.toHaveBeenCalled();
+    // Mutation: applying the live overrides outside the live-mode branch of the constructor breaks this.
+  });
+
+  it('uses the replacement checkout source instead of sending its reads to the first client', async () => {
+    const { runtime } = await mounted();
+    const replacement = fakeClient({
+      get_shop_order_rules: () => ({ data: { ...RULES, pickup_days: [3] }, error: null })
+    });
+    await switchCheckoutSource(runtime, replacement.client);
+    expect(replacement.calls.some((call) => call.name === 'get_shop_order_rules')).toBe(true);
+    expect(
+      runtime
+        .renderVals()
+        .liveCheckout!.dates.every((date) => new Date(date.value + 'T00:00:00Z').getUTCDay() === 3)
+    ).toBe(true);
+  });
+
+  it('retires checkout dates when its source is removed without sending an order', async () => {
+    const { runtime, calls } = await mounted();
+    await fillForm(runtime);
+    await switchCheckoutSource(runtime, null);
+    expect(runtime.renderVals().liveCheckout!.rulesState).toBe('failed');
+    expect(runtime.renderVals().liveCheckout!.dates).toEqual([]);
+    await submit(runtime);
+    expect(placeCalls(calls)).toEqual([]);
+  });
+
+  it('keeps an uncertain checkout request with its original client across a temporary source replacement', async () => {
+    let attempts = 0;
+    const first = await mounted({
+      place_order: () =>
+        ++attempts === 1
+          ? new TypeError('Lost reply')
+          : { data: [{ ...PLACED, replayed: true }], error: null }
+    });
+    await fillForm(first.runtime);
+    await submit(first.runtime);
+    const original = placeCalls(first.calls)[0];
+    expect(first.runtime.renderVals().liveCheckout!.frozen).toBe(true);
+    const other = fakeClient();
+    await switchCheckoutSource(first.runtime, other.client);
+    expect(first.runtime.renderVals().liveCheckout!.frozen).toBe(false);
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('');
+    await switchCheckoutSource(first.runtime, first.client);
+    expect(first.runtime.renderVals().liveCheckout!.frozen).toBe(true);
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('Ana');
+    await submit(first.runtime);
+    expect(placeCalls(first.calls)[1]).toEqual(original);
+    expect(placeCalls(other.calls)).toEqual([]);
+  });
+
+  it('rejects a retired checkout edit and submit after source A to B to A', async () => {
+    const first = await mounted();
+    await fillForm(first.runtime);
+    const retired = first.runtime.renderVals().liveCheckout!,
+      entry = first.runtime.renderVals();
+    await switchCheckoutSource(first.runtime, fakeClient().client);
+    await switchCheckoutSource(first.runtime, first.client);
+    act(() => retired.set('name', 'Retired edit'));
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('Ana');
+    await act(async () => {
+      retired.submit();
+    });
+    expect(placeCalls(first.calls)).toEqual([]);
+    const reads = first.calls.length;
+    act(() => {
+      retired.retryRules();
+      retired.retryExtras();
+    });
+    expect(first.calls).toHaveLength(reads);
+    act(() => {
+      entry.openLookup();
+      entry.openWaitlist!();
+    });
+    expect(first.runtime.renderVals().sheet).toBeNull();
+  });
+
+  it('does not let an old Change order callback discard a restored uncertain request', async () => {
+    const first = await mounted({ place_order: () => new TypeError('Lost reply') });
+    await fillForm(first.runtime);
+    await submit(first.runtime);
+    const retired = first.runtime.renderVals().liveCheckout!;
+    await switchCheckoutSource(first.runtime, fakeClient().client);
+    await switchCheckoutSource(first.runtime, first.client);
+    act(() => retired.changeOrder());
+    expect(first.runtime.renderVals().liveCheckout!.frozen).toBe(true);
+    expect(placeCalls(first.calls)).toHaveLength(1);
+  });
+
+  it('keeps an acknowledged order in its originating source while another checkout is visible', async () => {
+    let release!: (reply: Reply) => void;
+    const first = await mounted({
+      place_order: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    });
+    await fillForm(first.runtime);
+    await submit(first.runtime);
+    const other = fakeClient();
+    await switchCheckoutSource(first.runtime, other.client);
+    await act(async () => {
+      release({ data: [PLACED], error: null });
+    });
+    expect(first.runtime.renderVals().liveCheckout!.placed).toBeNull();
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('');
+    await switchCheckoutSource(first.runtime, first.client);
+    expect(first.runtime.renderVals().liveCheckout!.placed?.orderNo).toBe(PLACED.order_no);
+    expect(placeCalls(first.calls)).toHaveLength(1);
+    expect(placeCalls(other.calls)).toEqual([]);
+  });
+
+  it('does not assign old fields to a source switched before React applies its empty checkout', async () => {
+    const first = await mounted();
+    await fillForm(first.runtime);
+    const other = fakeClient();
+    await act(async () => {
+      const one = first.runtime.loadShopOrders(other.client);
+      const two = first.runtime.loadShopOrders(first.client);
+      await Promise.all([one, two]);
+    });
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('Ana');
+    await switchCheckoutSource(first.runtime, other.client);
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('');
+    expect(first.runtime.renderVals().liveCheckout!.fields.mobile).toBe('');
+  });
+
+  it('does not navigate a replacement checkout when an old lookup succeeds late', async () => {
+    let release!: (reply: Reply) => void;
+    const first = await mounted(
+      {
+        find_order: () =>
+          new Promise((resolve) => {
+            release = resolve;
+          })
+      },
+      'lookup'
+    );
+    act(() => first.runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    const other = fakeClient();
+    await switchCheckoutSource(first.runtime, other.client);
+    act(() => first.runtime.setState({ screen: 'checkout' }));
+    await act(async () => {
+      release({ data: TOKEN, error: null });
+    });
+    await flush();
+    expect(first.runtime.state.screen).toBe('checkout');
+    expect(other.calls.some((call) => call.name === 'order_status')).toBe(false);
+  });
+
+  it('does not publish an old lookup after client A to B to A and a newer private link', async () => {
+    const wanted = 'c'.repeat(64);
+    let release!: (reply: Reply) => void;
+    const first = await mounted(
+      {
+        find_order: () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+        order_status: (args) => ({
+          data: { ...STATUS, order_no: args.p_token === wanted ? 'HC-2002' : 'HC-1001' },
+          error: null
+        })
+      },
+      'lookup'
+    );
+    act(() => first.runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    await switchCheckoutSource(first.runtime, fakeClient().client);
+    await switchCheckoutSource(first.runtime, first.client);
+    act(() => first.runtime.go('status'));
+    act(() => {
+      window.history.replaceState(null, '', '/status#t=' + wanted);
+      first.runtime.syncStatusRoute();
+    });
+    await flush();
+    expect(first.runtime.renderVals().cust.orderNo).toBe('HC-2002');
+    await act(async () => release({ data: TOKEN, error: null }));
+    await flush();
+    act(() => first.runtime.syncStatusRoute());
+    expect(first.runtime.renderVals().cust.orderNo).toBe('HC-2002');
+    expect(
+      first.calls.filter((call) => call.name === 'order_status').map((call) => call.args.p_token)
+    ).toEqual([wanted]);
+    expect(window.location.hash).toBe('#t=' + wanted);
+  });
+
+  it('retires a pending lookup immediately across a same-client route round trip', async () => {
+    let release!: (reply: Reply) => void;
+    const first = await mounted(
+      {
+        find_order: () =>
+          new Promise((resolve) => {
+            release = resolve;
+          })
+      },
+      'lookup'
+    );
+    act(() => first.runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    act(() => first.runtime.go('shop'));
+    act(() => first.runtime.go('lookup'));
+    const returnedState = first.runtime.renderVals().liveLookup!.state;
+    await act(async () => release({ data: TOKEN, error: null }));
+    await flush();
+    expect(returnedState).toBe('idle');
+    expect(first.runtime.state.screen).toBe('lookup');
+    expect(first.calls.filter((call) => call.name === 'order_status')).toEqual([]);
+  });
+
+  it('keeps a newer lookup when a cancelled sheet returns late', async () => {
+    const wanted = 'c'.repeat(64);
+    let release!: (reply: Reply) => void,
+      requests = 0;
+    const first = await mounted({
+      find_order: () =>
+        ++requests === 1
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : { data: wanted, error: null },
+      order_status: (args) => ({
+        data: { ...STATUS, order_no: args.p_token === wanted ? 'HC-2002' : 'HC-1001' },
+        error: null
+      })
+    });
+    act(() => first.runtime.renderVals().openLookup());
+    act(() => first.runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    act(() => first.runtime.renderVals().liveLookup!.close());
+    act(() => first.runtime.renderVals().openLookup());
+    await act(async () => first.runtime.renderVals().liveLookup!.run('HC-2002', '0917 123 4567'));
+    await flush();
+    await act(async () => release({ data: TOKEN, error: null }));
+    await flush();
+    expect(first.runtime.renderVals().cust.orderNo).toBe('HC-2002');
+    expect(
+      first.calls.filter((call) => call.name === 'order_status').map((call) => call.args.p_token)
+    ).toEqual([wanted]);
+  });
+
+  it('keeps the active private order until a lookup finishes and discards a cancelled status read', async () => {
+    const wanted = 'c'.repeat(64);
+    let release!: (reply: Reply) => void;
+    const first = await mounted(
+      {
+        find_order: () => ({ data: TOKEN, error: null }),
+        order_status: (args) =>
+          args.p_token === wanted
+            ? { data: { ...STATUS, order_no: 'HC-2002' }, error: null }
+            : new Promise((resolve) => {
+                release = resolve;
+              })
+      },
+      'status'
+    );
+    act(() => {
+      window.history.replaceState(null, '', '/status#t=' + wanted);
+      first.runtime.syncStatusRoute();
+    });
+    await flush();
+    act(() => first.runtime.renderVals().openLookup());
+    await act(async () => first.runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    await flush();
+    const whileReading = first.runtime.renderVals().cust.orderNo;
+    act(() => first.runtime.renderVals().liveLookup!.close());
+    await act(async () => release({ data: STATUS, error: null }));
+    await flush();
+    expect(whileReading).toBe('HC-2002');
+    expect(first.runtime.renderVals().cust.orderNo).toBe('HC-2002');
+    expect(window.location.hash).toBe('#t=' + wanted);
+  });
+
+  it('preserves a newer status-link intent while a lookup in the same sheet is pending', async () => {
+    const wanted = 'c'.repeat(64);
+    let release!: (reply: Reply) => void;
+    const first = await mounted(
+      {
+        find_order: () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+        order_status: (args) => ({
+          data: { ...STATUS, order_no: args.p_token === wanted ? 'HC-2002' : 'HC-1001' },
+          error: null
+        })
+      },
+      'status'
+    );
+    act(() => first.runtime.renderVals().openLookup());
+    act(() => first.runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    act(() => {
+      window.history.replaceState(null, '', '/status#t=' + wanted);
+      first.runtime.syncStatusRoute();
+    });
+    await flush();
+    await act(async () => release({ data: TOKEN, error: null }));
+    await flush();
+    expect(first.runtime.renderVals().cust.orderNo).toBe('HC-2002');
+    expect(
+      first.calls.filter((call) => call.name === 'order_status').map((call) => call.args.p_token)
+    ).toEqual([wanted]);
+  });
+
+  it('retires a customer sheet and its old Cancel when its checkout source changes', async () => {
+    const first = await mounted();
+    act(() => first.runtime.renderVals().openWaitlist!());
+    const retired = first.runtime.renderVals().liveWaitlist!;
+    await switchCheckoutSource(first.runtime, fakeClient().client);
+    expect(first.runtime.renderVals().liveWaitlist).toBeNull();
+    act(() => first.runtime.renderVals().openWaitlist!());
+    act(() => retired.close());
+    expect(first.runtime.renderVals().liveWaitlist).not.toBeNull();
+  });
+
+  it('offers local pickup Retry without losing customer fields or writing an order', async () => {
+    let failed = true;
+    const first = await mounted({
+      get_shop_order_rules: () =>
+        failed ? { data: null, error: { code: '57014' } } : { data: RULES, error: null }
+    });
+    custSet(first.runtime, 'name', 'Keep pickup draft');
+    const view = first.runtime.renderVals().liveCheckout!;
+    expect(typeof view.retryRules).toBe('function');
+    const page = render(<CheckoutScreen v={first.runtime.renderVals()} />);
+    expect(page.getByRole('button', { name: 'Retry pickup days' })).toBeTruthy();
+    act(() => first.runtime.setState({ online: false }));
+    const reads = first.calls.length;
+    act(() => view.retryRules());
+    expect(first.calls).toHaveLength(reads);
+    act(() => first.runtime.setState({ online: true }));
+    failed = false;
+    await act(async () => {
+      view.retryRules();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(first.runtime.renderVals().liveCheckout!.rulesState).toBe('ready');
+    expect(first.runtime.renderVals().liveCheckout!.fields.name).toBe('Keep pickup draft');
+    await fillForm(first.runtime, { name: 'Keep pickup draft' });
+    failed = true;
+    await switchCheckoutSource(first.runtime, first.client);
+    expect(first.runtime.renderVals().liveCheckout!.dates.length).toBeGreaterThan(0);
+    await submit(first.runtime);
+    expect(placeCalls(first.calls)).toEqual([]);
+  });
+
+  it('rejects an older pickup answer after a newer read of the same source', async () => {
+    let reads = 0,
+      release!: (reply: Reply) => void;
+    const first = await mounted({
+      get_shop_order_rules: () =>
+        ++reads === 2
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : { data: { ...RULES, pickup_days: reads >= 3 ? [3] : [1] }, error: null }
+    });
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = first.runtime.loadShopOrders(first.client);
+    });
+    await switchCheckoutSource(first.runtime, first.client);
+    await act(async () => {
+      release({ data: { ...RULES, pickup_days: [1] }, error: null });
+      await pending;
+    });
+    expect(
+      first.runtime
+        .renderVals()
+        .liveCheckout!.dates.every((date) => new Date(date.value + 'T00:00:00Z').getUTCDay() === 3)
+    ).toBe(true);
+  });
+
+  it('keeps exact Try again available when pickup refresh fails after an unanswered order', async () => {
+    let failed = false,
+      attempts = 0;
+    const first = await mounted({
+      get_shop_order_rules: () =>
+        failed ? { data: null, error: { code: '57014' } } : { data: RULES, error: null },
+      place_order: () =>
+        ++attempts === 1
+          ? new TypeError('Lost reply')
+          : { data: [{ ...PLACED, replayed: true }], error: null }
+    });
+    await fillForm(first.runtime);
+    await submit(first.runtime);
+    failed = true;
+    await switchCheckoutSource(first.runtime, first.client);
+    const page = render(<CheckoutScreen v={first.runtime.renderVals()} />);
+    expect((page.getByRole('button', { name: 'Try again' }) as HTMLButtonElement).disabled).toBe(
+      false
+    );
+    await submit(first.runtime);
+    expect(placeCalls(first.calls)[1]).toEqual(placeCalls(first.calls)[0]);
+  });
+
+  it('offers only the owner’s pickup dates and times from the database', async () => {
+    const { runtime } = await mounted({
+      get_shop_order_rules: () => ({ data: { ...RULES, pickup_days: [3] }, error: null })
+    });
+    const live = runtime.renderVals().liveCheckout!;
+    expect(live.rulesState).toBe('ready');
+    expect(live.dates.length).toBeGreaterThan(0);
+    expect(live.dates.every((d) => new Date(d.value + 'T00:00:00Z').getUTCDay() === 3)).toBe(true);
+    expect(live.times.at(-1)?.value).toBe('campus');
+  });
+
+  it('offers no dates when the rules cannot be read, and says so', async () => {
+    const { runtime } = await mounted({
+      get_shop_order_rules: () => ({ data: null, error: { code: '57014', message: 'x' } })
+    });
+    const live = runtime.renderVals().liveCheckout!;
+    expect(live.rulesState).toBe('failed');
+    expect(live.dates).toEqual([]);
+    expect(render(<CheckoutScreen v={runtime.renderVals()} />).container.textContent).toContain(
+      'pickup days could not be loaded'
+    );
+  });
+
+  it('checks the fields first: nothing is sent while a field is missing', async () => {
+    const { runtime, calls } = await mounted();
+    await submit(runtime);
+    expect(placeCalls(calls)).toHaveLength(0);
+    const errors = runtime.renderVals().liveCheckout!.errors;
+    expect(Object.keys(errors).sort()).toEqual(['date', 'ig', 'mobile', 'name', 'pay', 'time']);
+    await custSet(runtime, 'name', 'Ana');
+    expect(runtime.renderVals().liveCheckout!.errors.name).toBeUndefined();
+    expect(runtime.renderVals().liveCheckout!.errors.mobile).toBeDefined();
+    // Mutation: sending without the field check reaches place_order with an empty body.
+  });
+
+  it('S1: cannot continue without a pickup date, and no order is sent', async () => {
+    const { runtime, calls } = await mounted();
+    await fillForm(runtime, { pickupDate: '' });
+    await submit(runtime);
+    expect(placeCalls(calls)).toHaveLength(0);
+    expect(Object.keys(runtime.renderVals().liveCheckout!.errors)).toEqual(['date']);
+  });
+
+  it('places the order once, with exactly the customer’s own fields, and shows the number and link', async () => {
+    const { runtime, calls } = await mounted();
+    await fillForm(runtime);
+    await submit(runtime);
+    const bodies = placeCalls(calls);
+    expect(bodies).toHaveLength(1);
+    const body = bodies[0]!;
+    expect(Object.keys(body).sort()).toEqual([
+      'client_id',
+      'ig',
+      'items',
+      'mobile',
+      'name',
+      'pay_method',
+      'pickup_date',
+      'pickup_window'
+    ]);
+    expect(body).toMatchObject({
+      name: 'Ana',
+      ig: '@ana.bakes',
+      pay_method: 'GCash',
+      pickup_window: '10:30',
+      items: [{ product_id: 'dcf', qty: 2 }]
+    });
+    expect(String(body.client_id)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    const placed = runtime.renderVals().liveCheckout!.placed!;
+    expect(placed.orderNo).toBe('HC-1001');
+    expect(placed.statusUrl).toBe(window.location.origin + '/status#t=' + TOKEN);
+    expect(placed.statusUrl).not.toContain('?');
+    const text = render(<CheckoutScreen v={runtime.renderVals()} />).container.textContent ?? '';
+    expect(text).toContain('Order no. HC-1001');
+    expect(text).toContain('#t=' + TOKEN);
+    expect(text).not.toContain('Place order');
+  });
+
+  it('a double tap while the order is in flight sends one order', async () => {
+    let release: (r: Reply) => void = () => undefined;
+    const { runtime, calls } = await mounted({
+      place_order: () => new Promise<Reply>((resolve) => (release = resolve))
+    });
+    await fillForm(runtime);
+    await act(async () => {
+      runtime.renderVals().cust.submit();
+      runtime.renderVals().cust.submit();
+    });
+    expect(runtime.renderVals().liveCheckout!.sending).toBe(true);
+    expect(placeCalls(calls)).toHaveLength(1);
+    await act(async () => release({ data: [PLACED], error: null }));
+    await flush();
+    expect(runtime.renderVals().liveCheckout!.placed?.orderNo).toBe('HC-1001');
+    // Mutation: dropping the in-flight guard in OrderFlow.submit sends two orders.
+  });
+
+  it('after a lost reply the fields freeze and "Try again" resends the same id and the identical body', async () => {
+    let n = 0;
+    const { runtime, calls } = await mounted({
+      place_order: () =>
+        ++n === 1
+          ? new TypeError('Failed to fetch')
+          : { data: [{ ...PLACED, replayed: true }], error: null }
+    });
+    await fillForm(runtime);
+    await submit(runtime);
+    let v = runtime.renderVals().liveCheckout!;
+    expect(v.readOnly).toBe(true);
+    expect(v.banner?.tone).toBe('notice');
+    expect(v.placed).toBeNull();
+    // Edited after the loss: the frozen body still goes, so a changed order can never ride the old id.
+    await custSet(runtime, 'name', 'Someone Else');
+    await submit(runtime);
+    const [first, second] = placeCalls(calls);
+    expect(second).toEqual(first);
+    expect(second!.name).toBe('Ana');
+    expect(runtime.renderVals().liveCheckout!.placed?.orderNo).toBe('HC-1001');
+    v = runtime.renderVals().liveCheckout!;
+    expect(v.readOnly).toBe(false);
+    // Mutation: minting a new id on every submit sends a different client_id the second time.
+  });
+
+  it('locks the form and the box while the order is sending, unsettled or placed', async () => {
+    let release: (r: Reply) => void = () => undefined;
+    let n = 0;
+    const { runtime, calls } = await mounted({
+      place_order: () =>
+        ++n === 1
+          ? new Promise<Reply>((resolve) => (release = resolve))
+          : { data: [PLACED], error: null }
+    });
+    await fillForm(runtime);
+    await act(async () => {
+      runtime.renderVals().cust.submit();
+    });
+    // Sending: inputs read-only, an edit is ignored, the box cannot change.
+    expect(runtime.renderVals().liveCheckout!.readOnly).toBe(true);
+    expect(runtime.renderVals().liveCheckout!.frozen).toBe(false);
+    custSet(runtime, 'pickupTime', '16:00');
+    expect((runtime.state.cust as { pickupTime: string }).pickupTime).toBe('10:30');
+    act(() =>
+      (runtime as unknown as { custAdd: (p: string, d: number) => void }).custAdd('dcf', 1)
+    );
+    expect((runtime.state.cust as { box: Record<string, number> }).box).toEqual({ dcf: 2 });
+    // The reply is lost: unsettled and frozen, and still the same body on "Try again".
+    await act(async () => release(new TypeError('offline') as unknown as Reply));
+    await flush();
+    expect(runtime.renderVals().liveCheckout!.frozen).toBe(true);
+    custSet(runtime, 'name', 'Changed');
+    act(() =>
+      (runtime as unknown as { custAdd: (p: string, d: number) => void }).custAdd('dcf', 1)
+    );
+    expect((runtime.state.cust as { name: string }).name).toBe('Ana');
+    expect((runtime.state.cust as { box: Record<string, number> }).box).toEqual({ dcf: 2 });
+    await submit(runtime);
+    const [first, second] = placeCalls(calls);
+    expect(second).toEqual(first);
+    // Placed: the box stays put too, and the panel says when the pickup is.
+    const placed = runtime.renderVals().liveCheckout!.placed!;
+    expect(placed.pickupText).toBe('Thu, Oct 8 · 10:30 AM');
+    act(() =>
+      (runtime as unknown as { custAdd: (p: string, d: number) => void }).custAdd('dcf', 1)
+    );
+    expect((runtime.state.cust as { box: Record<string, number> }).box).toEqual({ dcf: 2 });
+    expect(render(<CheckoutScreen v={runtime.renderVals()} />).container.textContent).toContain(
+      'Pickup Thu, Oct 8 · 10:30 AM'
+    );
+    // Mutation: dropping the lock lets a changed box or date ride an old attempt.
+  });
+
+  it('"Change the order" drops the frozen attempt and warns to check Find my order', async () => {
+    const { runtime, calls } = await mounted({ place_order: () => new TypeError('offline') });
+    await fillForm(runtime);
+    await submit(runtime);
+    act(() => runtime.renderVals().liveCheckout!.changeOrder());
+    const v = runtime.renderVals().liveCheckout!;
+    expect(v.readOnly).toBe(false);
+    expect(v.banner?.text).toContain('Find my order');
+    await submit(runtime);
+    const [first, second] = placeCalls(calls);
+    expect(second!.client_id).not.toBe(first!.client_id);
+  });
+
+  it('a definite refusal is worded, ends the attempt, and the next try has a new id', async () => {
+    let n = 0;
+    const { runtime, calls } = await mounted({
+      place_order: () =>
+        ++n === 1
+          ? { data: null, error: { code: 'ZC001', message: 'closed', details: null } }
+          : { data: [PLACED], error: null }
+    });
+    await fillForm(runtime);
+    await submit(runtime);
+    const v = runtime.renderVals().liveCheckout!;
+    expect(v.banner).toEqual({ tone: 'error', text: DROP_CLOSED_MESSAGE, canWaitlist: true });
+    expect(v.readOnly).toBe(false);
+    await submit(runtime);
+    const [first, second] = placeCalls(calls);
+    expect(second!.client_id).not.toBe(first!.client_id);
+  });
+
+  it('a pickup or payment refusal lands on its own field', async () => {
+    const { runtime } = await mounted({
+      place_order: () => ({ data: null, error: { code: 'ZC004', message: 'x', details: null } })
+    });
+    await fillForm(runtime);
+    await submit(runtime);
+    expect(runtime.renderVals().liveCheckout!.errors.date).toMatch(/pickup/);
+    const paid = await mounted({
+      place_order: () => ({ data: null, error: { code: 'ZC005', message: 'x', details: null } })
+    });
+    await fillForm(paid.runtime);
+    await submit(paid.runtime);
+    expect(paid.runtime.renderVals().liveCheckout!.errors.pay).toMatch(/payment method/);
+  });
+
+  it('with no Supabase there is nothing to order through: no dates, and a submit says so', async () => {
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    await act(async () => {
+      await ref.current!.loadShopOrders(null);
+    });
+    act(() => ref.current!.setState({ screen: 'checkout' }));
+    const v = ref.current!.renderVals().liveCheckout!;
+    expect(v.rulesState).toBe('failed');
+    expect(v.dates).toEqual([]);
+    await act(async () => {
+      ref.current!.renderVals().cust.submit();
+    });
+    expect(ref.current!.state.toast).toBeTruthy();
+  });
+
+  it('"See my order" clears the form and opens the status page for the placed order', async () => {
+    const { runtime, calls } = await mounted();
+    await fillForm(runtime);
+    await submit(runtime);
+    await act(async () => runtime.renderVals().liveCheckout!.placed!.seeOrder());
+    await flush();
+    expect(runtime.state.screen).toBe('status');
+    expect((runtime.state.cust as { name: string; box: object }).name).toBe('');
+    expect(calls.some((c) => c.name === 'order_status' && c.args.p_token === TOKEN)).toBe(true);
+    expect(runtime.renderVals().liveCheckout).toBeNull();
+  });
+});
+
+describe('B2: the status page', () => {
+  beforeEach(() => {
+    live = true;
+  });
+  afterEach(() => {
+    cleanup();
+    replacePayAccounts(PORTED.map((m) => ({ ...m })));
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('shows the database order with no invoice, no proof claim and no pickup code', async () => {
+    const { runtime } = await mounted({}, 'status');
+    await act(async () => {
+      await (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN);
+    });
+    const cust = runtime.renderVals().cust;
+    expect(cust.heroTitle).toBe('Order received');
+    expect(cust.invoiceLine).toBe('');
+    expect(cust.showCode).toBe(false);
+    const text = render(<OrderStatusScreen v={runtime.renderVals()} />).container.textContent ?? '';
+    expect(text).toContain('HC-1001');
+    expect(text).toContain('Contains milk.');
+    expect(text).not.toMatch(/Invoice|payment proof|Pickup code/);
+    // Mutation: taking the values from the engine's local orders shows "Order received / HC-1042" or an invoice.
+  });
+
+  it('says so, without a stack of ported text, when the order cannot be found or loaded', async () => {
+    const missing = await mounted({ order_status: () => ({ data: null, error: null }) }, 'status');
+    await act(async () => {
+      await (
+        missing.runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN);
+    });
+    expect(missing.runtime.renderVals().cust.heroTitle).toBe('We could not find that order');
+    cleanup();
+    const broken = await mounted(
+      { order_status: () => ({ data: null, error: { code: '57014', message: 'x' } }) },
+      'status'
+    );
+    await act(async () => {
+      await (
+        broken.runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN);
+    });
+    expect(broken.runtime.renderVals().cust.heroTitle).toBe('We could not load your order');
+  });
+
+  it('exposes status payment details only from the order client and retires cached payment reads', async () => {
+    const { runtime, client, calls } = await mounted({}, 'status');
+    window.history.replaceState(null, '', '/status#t=' + TOKEN);
+    await act(async () => runtime.syncStatusRoute());
+    await flush();
+    const payment = runtime.renderVals().liveCustomerPayment!;
+    expect(payment).toMatchObject({
+      fresh: true,
+      order: { totalCents: 45000 },
+      methods: [{ label: 'GCash', number: '0999' }]
+    });
+    const before = calls.length;
+    const other = fakeClient();
+    await act(async () => runtime.loadShopPayment(other.client));
+    expect(runtime.renderVals().liveCustomerPayment).toMatchObject({
+      methods: null,
+      paymentState: 'failed',
+      canRetry: false
+    });
+    act(payment.retry);
+    expect(calls).toHaveLength(before);
+    await act(async () => runtime.loadShopPayment(client));
+    const retry = runtime.renderVals().liveCustomerPayment!.retry;
+    const count = calls.length;
+    act(() => runtime.go('shop'));
+    act(() => runtime.go('status'));
+    act(retry);
+    expect(calls).toHaveLength(count);
+    const next = runtime.renderVals().liveCustomerPayment!.retry;
+    window.history.replaceState(null, '', '/status#t=' + 'e'.repeat(64));
+    act(next);
+    expect(calls).toHaveLength(count);
+  });
+
+  it('shares the real status-link synchronizer with the local preview', async () => {
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(
+      <OpsRuntime ref={(r) => void (ref.current = r)}>
+        <LiveOrderRoute />
+      </OpsRuntime>
+    );
+    const runtime = ref.current!,
+      fake = fakeClient();
+    await act(async () => runtime.loadShopOrders(fake.client));
+    act(() => runtime.go('status'));
+    await act(async () =>
+      (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN)
+    );
+    await flush();
+    expect(window.location.hash).toBe('#t=' + TOKEN);
+    expect(fake.calls.filter((c) => c.name === 'order_status')).toHaveLength(1);
+    expect(runtime.renderVals().liveStatusRead!.state).toBe('loaded');
+  });
+
+  it('retries only the current private read, blocks repeated taps, and labels retained data', async () => {
+    let response: Reply | Promise<Reply> = { data: null, error: { code: '57014' } };
+    let release: (r: Reply) => void = () => undefined;
+    const { runtime, calls } = await mounted({ order_status: () => response }, 'status');
+    window.history.replaceState(null, '', '/status#t=' + TOKEN);
+    await act(async () => runtime.syncStatusRoute());
+    await flush();
+    const retry = runtime.renderVals().liveStatusRead!.retry;
+    expect(runtime.renderVals().liveStatusRead).toMatchObject({ state: 'error', stale: false });
+    response = new Promise<Reply>((resolve) => (release = resolve));
+    act(() => {
+      retry();
+      retry();
+    });
+    expect(runtime.renderVals().liveStatusRead!.state).toBe('loading');
+    expect(calls.filter((c) => c.name === 'order_status')).toHaveLength(2);
+    await act(async () => release({ data: STATUS, error: null }));
+    expect(runtime.renderVals().cust.orderNo).toBe('HC-1001');
+    response = { data: null, error: { code: '57014' } };
+    await act(async () => runtime.renderVals().liveStatusRead!.retry());
+    await flush();
+    expect(runtime.renderVals().cust.orderNo).toBe('HC-1001');
+    expect(runtime.renderVals().liveStatusRead).toMatchObject({ state: 'error', stale: true });
+    response = { data: null, error: null };
+    await act(async () => runtime.renderVals().liveStatusRead!.retry());
+    await flush();
+    expect(runtime.renderVals().cust.orderNo).toBe('—');
+    expect(runtime.renderVals().liveStatusRead).toMatchObject({ state: 'missing', stale: false });
+    expect(calls.filter((c) => c.name === 'order_status').map((c) => c.args.p_token)).toEqual([
+      TOKEN,
+      TOKEN,
+      TOKEN,
+      TOKEN
+    ]);
+    expect(calls.some((c) => /place_order|staff_|record_/.test(c.name))).toBe(false);
+  });
+
+  it('retires cached status Retry after navigation, changed links and client round trips', async () => {
+    const { runtime, client, calls } = await mounted({}, 'status');
+    window.history.replaceState(null, '', '/status#t=' + TOKEN);
+    await act(async () => runtime.syncStatusRoute());
+    await flush();
+    const retry = runtime.renderVals().liveStatusRead!.retry;
+    const count = calls.length;
+    act(() => runtime.go('shop'));
+    act(() => runtime.go('status'));
+    act(retry);
+    expect(calls).toHaveLength(count);
+    const another = runtime.renderVals().liveStatusRead!.retry;
+    window.history.replaceState(null, '', '/status');
+    act(another);
+    expect(calls).toHaveLength(count);
+    window.history.replaceState(null, '', '/status#t=' + 'e'.repeat(64));
+    act(another);
+    expect(calls).toHaveLength(count);
+    window.history.replaceState(null, '', '/status#t=' + TOKEN);
+    const beforeSwitch = runtime.renderVals().liveStatusRead!.retry;
+    await switchCheckoutSource(runtime, fakeClient().client);
+    await switchCheckoutSource(runtime, client);
+    act(beforeSwitch);
+    expect(calls.filter((c) => c.name === 'order_status')).toHaveLength(1);
+  });
+
+  it('adopts the status link from the URL fragment on a direct load, and validates it', async () => {
+    window.history.replaceState(null, '', '/status#t=' + TOKEN);
+    const { runtime, calls } = await mounted({}, 'status');
+    await act(async () => runtime.syncStatusRoute());
+    await flush();
+    expect(calls.filter((c) => c.name === 'order_status').map((c) => c.args.p_token)).toEqual([
+      TOKEN
+    ]);
+    expect(runtime.renderVals().cust.heroTitle).toBe('Order received');
+    cleanup();
+    window.history.replaceState(null, '', '/status#t=' + 'z'.repeat(64));
+    const bad = await mounted({}, 'status');
+    await act(async () => bad.runtime.syncStatusRoute());
+    expect(bad.calls.some((c) => c.name === 'order_status')).toBe(false);
+    // Mutation: reading the token from the query string, or skipping the 64-hex check, changes these.
+  });
+
+  it('keeps the token in the fragment, never the query string', async () => {
+    window.history.replaceState(null, '', '/status');
+    const { runtime } = await mounted({}, 'status');
+    await act(async () => {
+      await (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN);
+    });
+    act(() => runtime.syncStatusRoute());
+    expect(window.location.hash).toBe('#t=' + TOKEN);
+    expect(window.location.search).toBe('');
+    expect(window.location.pathname).toBe('/status');
+  });
+
+  it('a link pasted into the tab replaces the order on screen; a lookup then replaces that link', async () => {
+    const TOKEN_B = 'c'.repeat(64);
+    const { runtime, calls } = await mounted({}, 'status');
+    await act(async () => {
+      await (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN);
+    });
+    act(() => runtime.syncStatusRoute());
+    expect(window.location.hash).toBe('#t=' + TOKEN);
+    // A lookup for another order right after this runtime wrote the first link: the lookup wins.
+    const TOKEN_A2 = 'f'.repeat(64);
+    await act(async () => {
+      await (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN_A2);
+    });
+    act(() => runtime.syncStatusRoute());
+    expect(window.location.hash).toBe('#t=' + TOKEN_A2);
+    window.history.replaceState(null, '', '/status#t=' + TOKEN_B);
+    await act(async () => runtime.syncStatusRoute());
+    await flush();
+    expect(calls.filter((c) => c.name === 'order_status').map((c) => c.args.p_token)).toEqual([
+      TOKEN,
+      TOKEN_A2,
+      TOKEN_B
+    ]);
+    expect(window.location.hash).toBe('#t=' + TOKEN_B);
+    // A lookup for another order wins over the address bar it leaves behind.
+    const TOKEN_C = 'd'.repeat(64);
+    await act(async () => {
+      await (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN_C);
+    });
+    act(() => runtime.syncStatusRoute());
+    expect(window.location.hash).toBe('#t=' + TOKEN_C);
+    // Mutation: without the pasted-link check, the old token is written back over the new link.
+  });
+
+  it('never shows the last order under a different link while the new one loads', async () => {
+    let n = 0;
+    let release: (r: Reply) => void = () => undefined;
+    const { runtime } = await mounted(
+      {
+        order_status: () =>
+          ++n === 1
+            ? { data: STATUS, error: null }
+            : new Promise<Reply>((resolve) => (release = resolve))
+      },
+      'status'
+    );
+    await act(async () =>
+      (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN)
+    );
+    expect(runtime.renderVals().cust.orderNo).toBe('HC-1001');
+    await act(
+      async () =>
+        void (
+          runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+        ).orderFlow.loadStatus('e'.repeat(64))
+    );
+    expect(runtime.renderVals().cust.orderNo).toBe('—');
+    expect(runtime.renderVals().cust.heroTitle).toBe('Loading your order…');
+    await act(async () => release({ data: STATUS, error: null }));
+  });
+
+  it('"Order this cookie again" with no order on screen says so', async () => {
+    const { runtime } = await mounted({}, 'status');
+    act(() => runtime.renderVals().cust.reorder());
+    expect(runtime.state.screen).toBe('status');
+    expect(JSON.stringify(runtime.state.toast)).toContain('no order on screen');
+  });
+
+  it('does nothing to the address bar off the status screen', async () => {
+    window.history.replaceState(null, '', '/shop');
+    const { runtime } = await mounted({}, 'shop');
+    act(() => runtime.syncStatusRoute());
+    expect(window.location.hash).toBe('');
+  });
+
+  it('"Order this cookie again" loads only the flavours still on the menu', async () => {
+    const { runtime } = await mounted({}, 'status');
+    await act(async () => {
+      await (
+        runtime as unknown as { orderFlow: { loadStatus: (t: string) => Promise<void> } }
+      ).orderFlow.loadStatus(TOKEN);
+    });
+    act(() => runtime.renderVals().cust.reorder());
+    expect(runtime.state.screen).toBe('shop');
+    expect((runtime.state.cust as { box: Record<string, number> }).box).toEqual({ dcf: 2 });
+  });
+});
+
+describe('B2: find my order and the waiting list', () => {
+  beforeEach(() => {
+    live = true;
+  });
+  afterEach(() => {
+    cleanup();
+    replacePayAccounts(PORTED.map((m) => ({ ...m })));
+  });
+
+  it('opens the lookup as a sheet on a customer page, never on a staff page, whatever the role says', async () => {
+    const { runtime } = await mounted({}, 'shop');
+    expect(runtime.state.role).toBe('owner'); // an anonymous visitor's engine role: the reason the gate is the screen
+    act(() => runtime.renderVals().openLookup());
+    let v = runtime.renderVals();
+    expect(v.sheet?.liveForm).toBe(true);
+    expect(v.liveLookup).not.toBeNull();
+    expect(render(<LiveFormHost v={v} />).container.textContent).toContain('Order number');
+    act(() => runtime.setState({ screen: 'today' }));
+    v = runtime.renderVals();
+    expect(v.liveLookup).toBeNull();
+    expect(v.sheet?.liveForm).toBe(false);
+    // Mutation: gating on the role instead of the screen opens the customer sheet on a staff page.
+  });
+
+  it('finds an order by number and phone, then shows it', async () => {
+    const { runtime, calls } = await mounted({}, 'shop');
+    act(() => runtime.renderVals().openLookup());
+    await act(async () => runtime.renderVals().liveLookup!.run('hc-1001', '0917 123 4567'));
+    await flush();
+    expect(calls.find((c) => c.name === 'find_order')?.args).toEqual({
+      p_order_no: 'HC-1001',
+      p_phone: '0917 123 4567'
+    });
+    expect(runtime.state.screen).toBe('status');
+    expect(runtime.state.sheet).toBeNull();
+    expect(runtime.renderVals().cust.heroTitle).toBe('Order received');
+  });
+
+  it('a miss says the ported miss sentence and stays on the sheet', async () => {
+    const { runtime } = await mounted({ find_order: () => ({ data: null, error: null }) }, 'shop');
+    act(() => runtime.renderVals().openLookup());
+    await act(async () => runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    await flush();
+    expect(runtime.state.screen).toBe('shop');
+    expect(runtime.renderVals().liveLookup!.state).toBe('missed');
+    expect(render(<LiveFormHost v={runtime.renderVals()} />).container.textContent).toContain(
+      'Nothing matches that.'
+    );
+  });
+
+  it('the shop footer offers the waiting list, and joining sends exactly its own fields', async () => {
+    const { runtime, calls } = await mounted({}, 'shop');
+    const footer = render(<LiveShopFooter v={runtime.renderVals()} />).container.textContent ?? '';
+    expect(footer).toContain('Join the waiting list');
+    // Instagram is always required (approved 19 November): the privacy line never calls it optional.
+    expect(footer).toContain('phone number, Instagram handle and order details');
+    expect(footer).not.toMatch(/optional Instagram/);
+    act(() => runtime.renderVals().openWaitlist!());
+    const form = runtime.renderVals().liveWaitlist!;
+    await act(async () =>
+      form.join({ name: ' Ana ', ig: '@ana', mobile: '0917 123 4567', wantedDate: form.min })
+    );
+    await flush();
+    const body = calls.find((c) => c.name === 'join_waitlist')!.args.p_entry as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(body).sort()).toEqual(['client_id', 'ig', 'mobile', 'name', 'wanted_date']);
+    expect(body.name).toBe('Ana');
+    expect(runtime.renderVals().liveWaitlist!.state).toBe('done');
+  });
+
+  it('the waiting list refuses to send without an Instagram handle', async () => {
+    const { runtime, calls } = await mounted({}, 'shop');
+    act(() => runtime.renderVals().openWaitlist!());
+    const form = runtime.renderVals().liveWaitlist!;
+    await act(async () =>
+      form.join({ name: 'Ana', ig: '  ', mobile: '09171234567', wantedDate: form.min })
+    );
+    await flush();
+    expect(calls.some((c) => c.name === 'join_waitlist')).toBe(false);
+    expect(runtime.renderVals().liveWaitlist!.errors.ig).toMatch(/Instagram handle/);
+  });
+
+  it('the waiting list checks its fields first and words a refusal', async () => {
+    const { runtime, calls } = await mounted(
+      {
+        join_waitlist: () => ({ data: null, error: { code: 'ZC006', message: 'x', details: null } })
+      },
+      'shop'
+    );
+    act(() => runtime.renderVals().openWaitlist!());
+    await act(async () =>
+      runtime.renderVals().liveWaitlist!.join({ name: '', ig: '', mobile: '1', wantedDate: '' })
+    );
+    expect(calls.some((c) => c.name === 'join_waitlist')).toBe(false);
+    expect(Object.keys(runtime.renderVals().liveWaitlist!.errors).sort()).toEqual([
+      'date',
+      'ig',
+      'mobile',
+      'name'
+    ]);
+    const form = runtime.renderVals().liveWaitlist!;
+    await act(async () =>
+      form.join({ name: 'Ana', ig: '@ana', mobile: '09171234567', wantedDate: form.min })
+    );
+    await flush();
+    expect(runtime.renderVals().liveWaitlist!.state).toBe('refused');
+    expect(runtime.renderVals().liveWaitlist!.message).toMatch(/waiting list/);
+  });
+
+  it('a lost reply on the waiting list resends the same id', async () => {
+    let n = 0;
+    const { runtime, calls } = await mounted(
+      {
+        join_waitlist: () =>
+          ++n === 1
+            ? new TypeError('offline')
+            : { data: [{ waitlist_id: 'w', replayed: true }], error: null }
+      },
+      'shop'
+    );
+    act(() => runtime.renderVals().openWaitlist!());
+    const form = runtime.renderVals().liveWaitlist!;
+    const fields = { name: 'Ana', ig: '@ana', mobile: '09171234567', wantedDate: form.min };
+    await act(async () => form.join(fields));
+    await flush();
+    expect(runtime.renderVals().liveWaitlist!.state).toBe('unknown');
+    await act(async () => runtime.renderVals().liveWaitlist!.join({ ...fields, name: 'Other' }));
+    await flush();
+    const bodies = calls
+      .filter((c) => c.name === 'join_waitlist')
+      .map((c) => c.args.p_entry as Record<string, unknown>);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(runtime.renderVals().liveWaitlist!.state).toBe('done');
+  });
+
+  it('closing the waiting list with an unsettled entry keeps it, so opening it again resends the same id', async () => {
+    let n = 0;
+    const { runtime, calls } = await mounted(
+      {
+        join_waitlist: () =>
+          ++n === 1
+            ? new TypeError('offline')
+            : { data: [{ waitlist_id: 'w', replayed: true }], error: null }
+      },
+      'shop'
+    );
+    act(() => runtime.renderVals().openWaitlist!());
+    const form = runtime.renderVals().liveWaitlist!;
+    const fields = { name: 'Ana', ig: '@ana', mobile: '09171234567', wantedDate: form.min };
+    await act(async () => form.join(fields));
+    await flush();
+    act(() => runtime.renderVals().liveWaitlist!.close());
+    act(() => runtime.renderVals().openWaitlist!());
+    expect(runtime.renderVals().liveWaitlist!.state).toBe('unknown');
+    await act(async () => runtime.renderVals().liveWaitlist!.join(fields));
+    await flush();
+    const bodies = calls.filter((c) => c.name === 'join_waitlist').map((c) => c.args.p_entry);
+    expect(bodies[1]).toEqual(bodies[0]);
+    // Mutation: resetting on close sends a second entry under a new id.
+  });
+
+  it('demo mode has none of it', () => {
+    live = false;
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    const v = ref.current!.renderVals();
+    expect(v.liveLookup).toBeUndefined();
+    expect(v.liveWaitlist).toBeUndefined();
+    expect(v.openWaitlist).toBeUndefined();
+  });
+});
+
+describe('B3: the /lookup screen (the second guarded slot)', () => {
+  beforeEach(() => {
+    live = true;
+  });
+  afterEach(() => {
+    cleanup();
+    replacePayAccounts(PORTED.map((m) => ({ ...m })));
+  });
+
+  it('shows the live form itself, with no sheet and no promise of email lookup', async () => {
+    const { runtime } = await mounted({}, 'lookup');
+    const v = runtime.renderVals();
+    expect(v.liveLookup).not.toBeNull();
+    expect(v.sheet).toBeNull();
+    const text = render(<FindMyOrderScreen v={v} />).container.textContent ?? '';
+    expect(text).toContain('Find my order');
+    expect(text).toContain('Order number');
+    expect(text).toContain('Mobile number');
+    expect(text).not.toMatch(/emailed|or email/i);
+    // Mutation: dropping the lookup-screen case leaves liveLookup null there, and the screen renders nothing to type into.
+  });
+
+  it('finds an order from the screen, then shows it', async () => {
+    const { runtime, calls } = await mounted({}, 'lookup');
+    await act(async () => runtime.renderVals().liveLookup!.run('hc-1001', '0917 123 4567'));
+    await flush();
+    expect(calls.find((c) => c.name === 'find_order')?.args).toEqual({
+      p_order_no: 'HC-1001',
+      p_phone: '0917 123 4567'
+    });
+    expect(runtime.state.screen).toBe('status');
+  });
+
+  it('a miss stays on the screen and says so', async () => {
+    const { runtime } = await mounted(
+      { find_order: () => ({ data: null, error: null }) },
+      'lookup'
+    );
+    await act(async () => runtime.renderVals().liveLookup!.run('HC-1001', '0917 123 4567'));
+    await flush();
+    expect(runtime.state.screen).toBe('lookup');
+    expect(runtime.renderVals().liveLookup!.state).toBe('missed');
+    expect(render(<FindMyOrderScreen v={runtime.renderVals()} />).container.textContent).toContain(
+      'Nothing matches that.'
+    );
+  });
+
+  it('demo mode renders the ported page: the email promise, the one field, no live form', () => {
+    live = false;
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    act(() => ref.current!.setState({ screen: 'lookup' }));
+    const v = ref.current!.renderVals();
+    expect(v.liveLookup).toBeUndefined();
+    const text = render(<FindMyOrderScreen v={v} />).container.textContent ?? '';
+    expect(text).toContain('Lost the link we emailed you?');
+    expect(text).not.toContain('Mobile number');
+  });
+});

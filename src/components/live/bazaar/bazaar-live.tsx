@@ -1,0 +1,268 @@
+'use client';
+
+import { useEffect } from 'react';
+import type { OpsVals } from '@/view-models/vals';
+import type { LiveBazaarVals } from '@/lib/bazaar/live-bazaar-types';
+import { BazaarModeScreen } from '@/components/screens/bazaar-mode';
+import {
+  OfflineLine,
+  buttonBase,
+  h1Style,
+  mutedStyle,
+  screenStyle,
+  textStyle
+} from '@/components/live/stock/stock-shared';
+import { Button } from '@/components/ui/button';
+import { KitchenTransferPane } from './kitchen-transfer-pane';
+import { EventList } from './event-list';
+import { EventPage } from './event-page';
+import { DayPlan } from './day-plan';
+import { DayReview } from './day-review';
+import { TillBar } from './till-bar';
+import { ConsolidatedTill, TillBoundary } from './till';
+import { CatalogueNotice, useCatalogue } from './catalogue-notice';
+import { HelperBazaar, helperBazaarOf } from './helper-bazaar';
+import { PageTitle } from '@/components/ui/owner-kit';
+
+/** `liveBazaar` as the runtime provides it. Typed through the contract so this compiles before and after vals.ts widens. */
+export function liveBazaarOf(v: OpsVals): LiveBazaarVals | null {
+  return (v as OpsVals & { liveBazaar?: LiveBazaarVals | null }).liveBazaar ?? null;
+}
+
+/**
+ * The live Bazaar screen (S2). While this phone holds an event (a started day, or one from before the days existed) it draws
+ * the till unless the permitted owner selects Events: selling must work with no signal, for a helper, and on a phone
+ * the owner's data was never read on. With no event it is the owner's event list, an event's page and a day's plan.
+ */
+/** Every 15 s while on screen and online, and on coming back: sales from her other devices show up (14 November 2026). */
+const REFRESH_MS = 15_000;
+
+/**
+ * S3: a helper's Bazaar screen is the open day's till and nothing else (`HelperBazaar`); everyone else gets the owner's screen.
+ * Two components so each keeps its own hooks.
+ */
+export function BazaarLive({ v }: { v: OpsVals }) {
+  const helper = helperBazaarOf(v);
+  if (helper) return <HelperBazaar helper={helper} till={<BazaarBody v={v} bazaar={null} />} />;
+  return <OwnerBazaarLive v={v} />;
+}
+
+function OwnerBazaarLive({ v }: { v: OpsVals }) {
+  const bazaar = liveBazaarOf(v);
+  const refresh = bazaar?.refresh;
+  useEffect(() => {
+    if (!refresh) return;
+    const tick = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) refresh();
+    };
+    const timer = setInterval(tick, REFRESH_MS);
+    document.addEventListener('visibilitychange', tick);
+    window.addEventListener('focus', tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+      window.removeEventListener('focus', tick);
+    };
+  }, [refresh]);
+  const showingKitchen = Boolean(bazaar?.kitchen && !bazaar.navigation?.tillOnly);
+  return (
+    <>
+      {showingKitchen && bazaar?.kitchen ? (
+        <section
+          aria-label="Bazaar"
+          data-screen-label="Bazaar"
+          style={{ ...screenStyle, paddingBottom: '96px' }}
+        >
+          <KitchenTransferPane
+            view={bazaar.kitchen}
+            online={bazaar.online}
+            backLabel={
+              bazaar.tillPanel?.kind === 'cookies'
+                ? 'Back to adding cookies'
+                : bazaar.reviewing
+                  ? 'Back to day review'
+                  : undefined
+            }
+          />
+        </section>
+      ) : null}
+      <div hidden={showingKitchen} className="min-w-0">
+        <BazaarBody v={v} bazaar={bazaar} />
+      </div>
+    </>
+  );
+}
+
+/** Keep unsent form state while the owner reviews a kitchen transfer. */
+function BazaarBody({ v, bazaar }: { v: OpsVals; bazaar: LiveBazaarVals | null }) {
+  const ownDayVisible =
+    !bazaar?.editor &&
+    !bazaar?.reviewing &&
+    bazaar?.event?.days.some((day) => day.action === 'resume');
+  // A review ahead of the till: it is the owner's close-out of a day, and the till stays under it.
+  if (
+    v.event &&
+    (bazaar?.navigation?.tillOnly || (!bazaar?.reviewing && !bazaar?.navigation?.directory))
+  ) {
+    const ported = (
+      <>
+        <TillBar till={v.liveTill} panel={bazaar?.tillPanel} events={bazaar?.navigation?.events} />
+        <BazaarModeScreen v={v} />
+      </>
+    );
+    // The consolidated till for any event that is selling, unless this phone chose the classic one. Everything else
+    // (setting up, closed) keeps the ported screen, as does a crash.
+    const till = v.liveTill;
+    if (!till || !v.event.stage2 || till.classic) return ported;
+    return (
+      <TillBoundary fallback={ported}>
+        <ConsolidatedTill
+          v={v}
+          till={till}
+          panel={bazaar?.tillPanel}
+          events={bazaar?.navigation?.events}
+        />
+      </TillBoundary>
+    );
+  }
+  return (
+    // The room at the bottom keeps the last control clear of the app's floating add button.
+    <section
+      aria-label="Bazaar"
+      data-screen-label="Bazaar"
+      style={{ ...screenStyle, paddingBottom: '96px' }}
+    >
+      {bazaar?.navigation?.directory && bazaar.navigation.resume && !ownDayVisible ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-line bg-surface p-3">
+          <span className="text-body text-ink">
+            {bazaar.navigation.heldName} · Selling on this device
+          </span>
+          <Button variant="secondary" onClick={bazaar.navigation.resume}>
+            Return to selling
+          </Button>
+        </div>
+      ) : null}
+      {!bazaar ? (
+        <NoDays />
+      ) : bazaar.reviewing ? (
+        <Reviewing bazaar={bazaar} />
+      ) : (
+        <Days bazaar={bazaar} />
+      )}
+    </section>
+  );
+}
+
+function NoDays() {
+  return (
+    <>
+      <h1 style={h1Style}>Bazaar</h1>
+      <p style={textStyle}>
+        A bazaar day is planned and started by the owner, with signal. Once it has started, selling
+        works with no signal.
+      </p>
+    </>
+  );
+}
+
+function Reviewing({ bazaar }: { bazaar: LiveBazaarVals }) {
+  if (bazaar.review) return <DayReview review={bazaar.review} />;
+  if (bazaar.state === 'loading')
+    return (
+      <>
+        <h1 style={h1Style}>Bazaar</h1>
+        <p aria-live="polite" style={mutedStyle}>
+          Reading this day…
+        </p>
+      </>
+    );
+  return (
+    <>
+      <h1 style={h1Style}>Bazaar</h1>
+      <p role="alert" style={textStyle}>
+        This day could not be read. Check the signal and try again.
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+        <button type="button" onClick={bazaar.retry} style={buttonBase}>
+          Try again
+        </button>
+        <button type="button" onClick={bazaar.closeReview} style={buttonBase}>
+          Back
+        </button>
+      </div>
+    </>
+  );
+}
+
+function Days({ bazaar }: { bazaar: LiveBazaarVals }) {
+  const catalogue = useCatalogue(bazaar);
+  if (bazaar.editor && bazaar.event)
+    return (
+      <>
+        <OfflineLine online={bazaar.online} />
+        {catalogue.held ? (
+          <DayPlan key={bazaar.editor.key} editor={bazaar.editor} online={bazaar.online} />
+        ) : (
+          // HCB-004: the plan form lists her products at her prices; the built-in ones are not hers.
+          <div className="flex flex-col gap-4">
+            <PageTitle
+              title={`Plan ${bazaar.editor.dateText}`}
+              subtitle={bazaar.editor.eventName}
+              actions={
+                <Button variant="secondary" onClick={bazaar.editor.back}>
+                  Back to the event
+                </Button>
+              }
+            />
+            <CatalogueNotice failed={catalogue.failed} retry={catalogue.retry} />
+          </div>
+        )}
+      </>
+    );
+  if (bazaar.event)
+    return (
+      <>
+        <OfflineLine online={bazaar.online} />
+        <EventPage
+          event={bazaar.event}
+          onEditEvents={bazaar.add}
+          planning={
+            catalogue.held ? undefined : (
+              <CatalogueNotice failed={catalogue.failed} retry={catalogue.retry} />
+            )
+          }
+        />
+      </>
+    );
+  if (bazaar.state !== 'read')
+    return (
+      <>
+        <h1 style={h1Style}>Bazaar</h1>
+        {bazaar.state === 'loading' ? (
+          <p aria-live="polite" style={mutedStyle}>
+            Reading this event…
+          </p>
+        ) : (
+          <>
+            <p role="alert" style={textStyle}>
+              This event could not be read. Check the signal and try again.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <button type="button" onClick={bazaar.retry} style={buttonBase}>
+                Try again
+              </button>
+              <button type="button" onClick={bazaar.back} style={buttonBase}>
+                Back to the events
+              </button>
+            </div>
+          </>
+        )}
+      </>
+    );
+  return (
+    <>
+      <OfflineLine online={bazaar.online} />
+      <EventList bazaar={bazaar} />
+    </>
+  );
+}

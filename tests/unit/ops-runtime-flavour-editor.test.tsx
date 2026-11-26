@@ -1,0 +1,622 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+
+let live = true;
+vi.mock('@/lib/config/app-mode', () => ({ isLiveMode: () => live }));
+
+import { OpsRuntime } from '@/store/ops-runtime';
+import { AppFrame } from '@/components/shell/app-frame';
+import { LiveFormHost } from '@/components/live/live-form-host';
+import { ALLERGENS, PRODUCTS, replaceFlavours } from '@/store/engine/ops-engine';
+import type { Role } from '@/store/engine/ops-engine';
+import { FLAVOUR_TOASTS, type FlavoursClient, type FlavourRow } from '@/lib/data/flavours';
+
+/**
+ * MP-09 c1c: the flavour editor's entry points, live owner only, and the form host's
+ * content — through the real engine and the `sheet('flavours', …)` mechanism, not a fake.
+ */
+const PORTED = { list: PRODUCTS.map((p) => ({ ...p })), allergens: { ...ALLERGENS } };
+const WCB = PORTED.list.find((p) => p.id === 'wcb')!;
+
+function rowsFor(active: (id: string) => boolean): FlavourRow[] {
+  return PORTED.list.map((p, i) => ({
+    id: p.id,
+    name: p.name,
+    short_name: p.short,
+    price_cents: Math.round(p.price * 100),
+    kind: p.kind,
+    item_type: 'cookie',
+    capacity_weight: 1,
+    tag: p.tag,
+    description: p.desc,
+    image_path: p.img,
+    allergens: PORTED.allergens[p.id] ?? 'milk, eggs, wheat',
+    active: active(p.id),
+    published: true,
+    archived_at: null,
+    sort_order: i,
+    updated_at: '2026-09-28T01:00:00.000Z'
+  }));
+}
+
+function fakeClient(rows: FlavourRow[], save?: (args: Record<string, unknown>) => unknown) {
+  const rpc = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+    if (name === 'get_flavours') return { data: rows, error: null };
+    if (name === 'publish_flavours') return { data: [], error: null };
+    if (name === 'archive_flavour' || name === 'restore_flavour') {
+      const row = rows.find((item) => item.id === args?.p_id);
+      if (!row) return { data: [], error: null };
+      row.archived_at = name === 'archive_flavour' ? '2026-11-18T02:00:00.000Z' : null;
+      row.active = false;
+      row.published = false;
+      row.updated_at = '2026-11-18T02:01:00.000Z';
+      return { data: [row], error: null };
+    }
+    // Product types (migration 84) are read beside the flavours; a database without them answers that it has none.
+    if (name === 'get_product_types') return { data: null, error: { code: 'PGRST202' } };
+    return save
+      ? save(args ?? {})
+      : { data: [{ id: args?.p_id, updated_at: '2026-09-28T02:00:00.000Z' }], error: null };
+  });
+  return { client: { rpc } as unknown as FlavoursClient, rpc };
+}
+
+async function mounted(
+  role: Role,
+  rows: FlavourRow[] = rowsFor((id) => id !== 'nch'),
+  save?: (args: Record<string, unknown>) => unknown
+) {
+  const ref: { current: OpsRuntime | null } = { current: null };
+  render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+  const runtime = ref.current!;
+  act(() => runtime.setRole(role));
+  const { client, rpc } = fakeClient(rows, save);
+  await act(async () => {
+    await runtime.loadFlavours(client);
+  });
+  rpc.mockClear();
+  return { runtime, rpc };
+}
+
+/** Product tools keep the existing four entries addressable; recipes open within a product in the daily UI. */
+const menuItems = (runtime: OpsRuntime) =>
+  runtime.renderVals().toolGroups.find((g) => g.title === 'Make · Products')?.items ?? [];
+
+const toastText = (runtime: OpsRuntime) => JSON.stringify(runtime.state.toast ?? null);
+
+/** `liveForm.publish` fires the async `publishMenu` without a way to await it from a vals
+ * field typed `() => void` (the UI never awaits it either); calling the instance method
+ * directly, past TypeScript's `private`, is the reliable way to await it in a test. */
+function publishMenu(runtime: OpsRuntime): Promise<void> {
+  return (runtime as unknown as { publishMenu: () => Promise<void> }).publishMenu();
+}
+
+describe('MP-09 c1c: the flavour editor and Publish menu', () => {
+  beforeEach(() => {
+    live = true;
+  });
+  afterEach(() => {
+    cleanup();
+    replaceFlavours(
+      PORTED.list.map((p) => ({ ...p })),
+      PORTED.allergens
+    );
+  });
+
+  it('adds "Menu & flavours" for the owner only, and opens the list on tap', async () => {
+    const { runtime: owner } = await mounted('owner');
+    const item = menuItems(owner).find((i) => i.label === 'Menu & flavours');
+    expect(item).toBeDefined();
+    expect(owner.renderVals().liveForm).toBeNull();
+    act(() => item!.go());
+    const vals = owner.renderVals();
+    expect(vals.sheet?.liveForm).toBe(true);
+    expect(vals.sheet?.title).toBe('Menu & flavours');
+    expect(vals.liveForm?.rows).toHaveLength(6);
+    expect(vals.liveForm?.editing).toBeNull();
+
+    const { runtime: helper } = await mounted('helper');
+    expect(
+      helper
+        .renderVals()
+        .toolGroups.flatMap((g) => g.items)
+        .find((i) => i.label === 'Menu & flavours')
+    ).toBeUndefined();
+  });
+
+  it('keeps archived flavours out of the working list and exposes an explicit restore action', async () => {
+    const rows = rowsFor((id) => id !== 'nch').map((row) =>
+      row.id === 'wcb' ? { ...row, archived_at: '2026-11-18T02:00:00.000Z' } : row
+    );
+    const { runtime } = await mounted('owner', rows as FlavourRow[]);
+    act(() =>
+      menuItems(runtime)
+        .find((item) => item.label === 'Menu & flavours')!
+        .go()
+    );
+    const form = runtime.renderVals().liveForm!;
+    expect(form.rows.map((row) => row.id)).not.toContain('wcb');
+    expect(form.archivedRows?.map((row) => row.id)).toContain('wcb');
+    expect(PRODUCTS.map((row) => row.id)).toContain('wcb');
+    expect(form.archivedRows?.find((row) => row.id === 'wcb')?.restore).toEqual(
+      expect.any(Function)
+    );
+  });
+
+  it('requires a named confirmation and sends the stamp shown when Remove was chosen', async () => {
+    const rows = rowsFor((id) => id !== 'nch');
+    const { runtime, rpc } = await mounted('owner', rows);
+    act(() =>
+      menuItems(runtime)
+        .find((item) => item.label === 'Menu & flavours')!
+        .go()
+    );
+    const displayedStamp = runtime
+      .renderVals()
+      .liveForm!.rows.find((row) => row.id === 'wcb')!.updatedAt;
+    render(<LiveFormHost v={runtime.renderVals()} />);
+    fireEvent.click(screen.getByRole('button', { name: `Remove ${WCB.name}` }));
+    expect(
+      screen.getByRole('alertdialog', { name: /Remove white chocolate biscoff/i })
+    ).toBeTruthy();
+    expect(rpc.mock.calls.some(([name]) => name === 'archive_flavour')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove flavour' }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(rpc).toHaveBeenCalledWith('archive_flavour', {
+      p_id: 'wcb',
+      p_expected_updated_at: displayedStamp
+    });
+  });
+
+  it('keeps all four legacy tools addressable and recipes inside Products in the daily navigation', async () => {
+    const { runtime } = await mounted('owner');
+    const groups = runtime.renderVals().toolGroups;
+    expect(menuItems(runtime).map((i) => [i.label, i.sub])).toEqual([
+      ['Products', "Each flavour's price and cost, side by side"],
+      ['Recipes', 'Measured ingredients, for cost and stock'],
+      ['Menu & flavours', '6 flavours · add, edit and publish'],
+      ['Recipe drafts', 'Your original recipe text, as you wrote it']
+    ]);
+    const labels = groups.flatMap((g) => g.items.map((i) => i.label));
+    for (const label of ['Menu & flavours', 'Products', 'Recipes', 'Recipe drafts'])
+      expect(labels.filter((l) => l === label)).toHaveLength(1);
+    // The recipe is reached from its product; it is not another navigation link.
+    act(() => runtime.go('recipes'));
+    expect(runtime.renderVals().liveScreen?.tabs?.entries.map((i) => i.label)).toEqual([
+      'Products',
+      'Menu & flavours',
+      'Recipe drafts'
+    ]);
+    // The moved entries still open their screens.
+    act(() =>
+      menuItems(runtime)
+        .find((i) => i.label === 'Products')!
+        .go()
+    );
+    expect(runtime.state.screen).toBe('products');
+    act(() =>
+      menuItems(runtime)
+        .find((i) => i.label === 'Recipes')!
+        .go()
+    );
+    expect(runtime.state.screen).toBe('recipes');
+  });
+
+  it('keeps every All tools description short enough for one line on a phone (finding 11)', async () => {
+    const { runtime } = await mounted('owner');
+    const long = runtime
+      .renderVals()
+      .toolGroups.flatMap((g) => g.items)
+      .filter((i) => String(i.sub).length > 50)
+      .map((i) => `${String(i.label)}: ${String(i.sub)}`);
+    expect(long).toEqual([]);
+  });
+
+  it('leaves All tools as ported for a helper and in demo mode', async () => {
+    const { runtime: helper } = await mounted('helper');
+    expect(helper.renderVals().toolGroups.some((g) => g.title === 'Make · Products')).toBe(false);
+    cleanup();
+    live = false;
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    act(() => ref.current!.setRole('owner'));
+    const groups = ref.current!.renderVals().toolGroups;
+    expect(groups.some((g) => g.title === 'Make · Products')).toBe(false);
+    expect(groups.find((g) => g.title === 'Kitchen')?.items.map((i) => i.label)).toContain(
+      'Recipes'
+    );
+    expect(groups.find((g) => g.title === 'Business')?.items.map((i) => i.label)).toContain(
+      'Products'
+    );
+  });
+
+  it("the products screen's Edit price opens the live editor for the owner, not the ported sheet", async () => {
+    const { runtime } = await mounted('owner');
+    const i = PRODUCTS.findIndex((p) => p.id === 'wcb');
+    act(() => runtime.renderVals().productRows[i]!.edit());
+    const vals = runtime.renderVals();
+    expect(vals.sheet?.liveForm).toBe(true);
+    expect(vals.sheet?.title).toBe('Edit ' + WCB.name);
+    expect(vals.liveForm?.editing).toMatchObject({ id: 'wcb', name: WCB.name, price: WCB.price });
+  });
+
+  it('cancels product-card editing back to its product without a write or directory detour', async () => {
+    const { runtime, rpc } = await mounted('owner');
+    act(() => runtime.go('products'));
+    act(() => runtime.renderVals().productRows[PRODUCTS.findIndex((p) => p.id === 'wcb')]!.edit());
+    act(() => runtime.renderVals().liveForm!.editing!.cancel());
+    expect(runtime.state.sheet).toBeNull();
+    expect(runtime.state.screen).toBe('products');
+    expect(
+      runtime
+        .renderVals()
+        .productRows.filter((p) => p.returnEditFocus)
+        .map((p) => p.name)
+    ).toEqual([WCB.short]);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('closes the selected product editor through the same contextual return and ignores stale Cancel', async () => {
+    const { runtime, rpc } = await mounted('owner');
+    act(() => runtime.go('products'));
+    const rows = runtime.renderVals().productRows;
+    act(() => rows[0]!.edit());
+    const oldCancel = runtime.renderVals().liveForm!.editing!.cancel;
+    act(() => rows[1]!.edit());
+    const newer = runtime.state.sheet;
+    act(() => oldCancel());
+    expect(runtime.state.sheet).toBe(newer);
+    expect(runtime.renderVals().liveForm?.editing?.id).toBe(PRODUCTS[1]!.id);
+    act(() => runtime.renderVals().closeSheet());
+    expect(runtime.state.sheet).toBeNull();
+    expect(
+      runtime
+        .renderVals()
+        .productRows.filter((p) => p.returnEditFocus)
+        .map((p) => p.name)
+    ).toEqual([rows[1]!.name]);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps directory editing Cancel in the directory even when opened from Products settings', async () => {
+    const { runtime, rpc } = await mounted('owner');
+    act(() => runtime.go('products'));
+    act(() =>
+      menuItems(runtime)
+        .find((i) => i.label === 'Menu & flavours')!
+        .go()
+    );
+    act(() => runtime.renderVals().liveForm!.rows[0]!.edit());
+    act(() => runtime.renderVals().liveForm!.editing!.cancel());
+    expect(runtime.renderVals().liveForm?.editing).toBeNull();
+    expect(runtime.renderVals().sheet?.title).toBe('Menu & flavours');
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('does not touch demo mode: no liveForm, no Menu & flavours, ported Edit price still opens editPrice', () => {
+    live = false;
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    const runtime = ref.current!;
+    act(() => runtime.setRole('owner'));
+    const vals = runtime.renderVals();
+    expect(vals.liveForm).toBeUndefined();
+    expect(
+      vals.toolGroups
+        .find((g) => g.title === 'Business')
+        ?.items.some((i) => i.label === 'Menu & flavours')
+    ).toBe(false);
+    const i = PRODUCTS.findIndex((p) => p.id === 'wcb');
+    act(() => vals.productRows[i]!.edit());
+    expect(runtime.renderVals().sheet?.isEditPrice).toBe(true);
+  });
+
+  it('adds a new flavour as a draft with a slugified id, then returns to the list', async () => {
+    const saves: Array<Record<string, unknown>> = [];
+    const { runtime } = await mounted('owner', undefined, (args) => {
+      saves.push(args);
+      return { data: [{ id: args.p_id, updated_at: '2026-09-28T03:00:00.000Z' }], error: null };
+    });
+    act(() =>
+      menuItems(runtime)
+        .find((i) => i.label === 'Menu & flavours')!
+        .go()
+    );
+    act(() => runtime.renderVals().liveForm!.addNew());
+    const editing = runtime.renderVals().liveForm!.editing!;
+    expect(editing.id).toBeNull();
+    expect(editing.active).toBe(true);
+    await act(async () => {
+      editing.save({
+        name: 'Brand New Cookie',
+        shortName: 'Brand New',
+        description: 'fresh from October',
+        imagePath: 'assets/new.png',
+        allergens: 'milk, eggs, wheat',
+        badge: 'New',
+        kind: 'Rotating',
+        itemType: 'cookie',
+        capacityWeight: 1,
+        sortOrder: 9,
+        price: 145,
+        active: true
+      });
+      await Promise.resolve();
+    });
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toMatchObject({
+      p_id: 'brand-new-cookie',
+      p_expected_updated_at: null,
+      p_flavour: expect.objectContaining({ name: 'Brand New Cookie', price_cents: 14500 })
+    });
+    // Mutation check: without navigating back on success, the editor would stay open.
+    const after = runtime.renderVals();
+    expect(after.sheet?.title).toBe('Menu & flavours');
+    expect(after.liveForm?.editing).toBeNull();
+  });
+
+  it('names what customers will now see, or says the shop shows nothing', async () => {
+    const { runtime: some } = await mounted(
+      'owner',
+      rowsFor((id) => id !== 'nch')
+    );
+    await act(async () => {
+      await publishMenu(some);
+    });
+    expect(toastText(some)).toContain('Customers now see 5 flavours');
+
+    const { runtime: none } = await mounted(
+      'owner',
+      rowsFor(() => false)
+    );
+    await act(async () => {
+      await publishMenu(none);
+    });
+    expect(toastText(none)).toContain('shows no flavours');
+  });
+
+  it('reports when publishing fails, offline or refused', async () => {
+    const { runtime } = await mounted('owner');
+    act(() => runtime.setState({ online: false }));
+    await act(async () => {
+      await publishMenu(runtime);
+    });
+    expect(toastText(runtime)).toContain('Offline');
+  });
+
+  it('offers her product types in Edit product, saves the chosen one, and adds a type (migration 84)', async () => {
+    const types = {
+      types: [
+        {
+          id: 'cookie',
+          label: 'Cookie',
+          behaves_as: 'cookie',
+          sort_order: 0,
+          active: true,
+          built_in: true,
+          updated_at: 't0'
+        },
+        {
+          id: 'set',
+          label: 'Set',
+          behaves_as: 'set',
+          sort_order: 1,
+          active: true,
+          built_in: true,
+          updated_at: 't0'
+        },
+        {
+          id: 'ice-cream',
+          label: 'Ice cream',
+          behaves_as: 'item',
+          sort_order: 2,
+          active: true,
+          built_in: false,
+          updated_at: 't1'
+        },
+        {
+          id: 'old-merch',
+          label: 'Old merch',
+          behaves_as: 'item',
+          sort_order: 3,
+          active: false,
+          built_in: false,
+          updated_at: 't1'
+        }
+      ],
+      products: { wcb: 'cookie' }
+    };
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    const runtime = ref.current!;
+    act(() => runtime.setRole('owner'));
+    const rpc = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+      calls.push([name, args ?? {}]);
+      if (name === 'get_flavours') return { data: rowsFor((id) => id !== 'nch'), error: null };
+      if (name === 'get_product_types') return { data: types, error: null };
+      if (name === 'save_product_type')
+        return { data: [{ id: 'drinks', updated_at: 't2' }], error: null };
+      return { data: [{ id: args?.p_id, updated_at: '2026-09-28T02:00:00.000Z' }], error: null };
+    });
+    await act(async () => {
+      await runtime.loadFlavours({ rpc } as unknown as FlavoursClient);
+      await Promise.resolve();
+    });
+    const i = PRODUCTS.findIndex((p) => p.id === 'wcb');
+    act(() => runtime.renderVals().productRows[i]!.edit());
+    const editing = runtime.renderVals().liveForm!.editing!;
+    expect(editing.typeId).toBe('cookie');
+    // Switched-off types are not offered for a product that does not have them.
+    expect(editing.typeOptions?.map((o) => o.id)).toEqual(['cookie', 'set', 'ice-cream']);
+    await act(async () => {
+      editing.save({ ...editing, itemType: 'item', typeId: 'ice-cream' });
+      await Promise.resolve();
+    });
+    const save = calls.find(([name]) => name === 'save_flavour')![1];
+    // Its type is read again after the save, so the next edit starts from it.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(calls.filter(([name]) => name === 'get_product_types').length).toBeGreaterThanOrEqual(2);
+    expect(save.p_flavour).toMatchObject({ item_type: 'item', type_id: 'ice-cream' });
+    // The panel adds a type with a slug from her name and the next order.
+    const view = runtime.renderVals().liveForm!;
+    await act(async () => {
+      expect(await view.types!.add('Drinks', 'item')).toBeNull();
+    });
+    expect(calls.find(([name]) => name === 'save_product_type')![1]).toMatchObject({
+      p_type: { id: 'drinks', label: 'Drinks', behaves_as: 'item', sort_order: 4, active: true },
+      p_expected_updated_at: null
+    });
+    expect(view.types!.rows.find((r) => r.id === 'cookie')!.toggle).toBeNull();
+  });
+
+  it("Edit product carries the flavour's cost per cookie, the recipe book's own field (Cine, 14 November 2026)", async () => {
+    const { runtime } = await mounted('owner');
+    const i = PRODUCTS.findIndex((p) => p.id === 'wcb');
+    act(() => runtime.renderVals().productRows[i]!.edit());
+    const editing = runtime.renderVals().liveForm!.editing!;
+    expect(editing.costItem?.id).toBe('wcb');
+    const view = render(<AppFrame v={runtime.renderVals()} />);
+    expect(
+      view.getByRole('form', { name: 'Cost per cookie for ' + editing.costItem!.name })
+    ).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Save product' })).toBeTruthy();
+    view.unmount();
+    // A new product has no cost of its own yet.
+    act(() => runtime.renderVals().liveForm!.addNew());
+    expect(runtime.renderVals().liveForm!.editing!.costItem ?? null).toBeNull();
+  });
+
+  it('renders the list and the edit form with no undefined, NaN or console error', async () => {
+    const { runtime } = await mounted('owner');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      act(() =>
+        menuItems(runtime)
+          .find((i) => i.label === 'Menu & flavours')!
+          .go()
+      );
+      const list = render(<AppFrame v={runtime.renderVals()} />);
+      expect(list.container.textContent).toContain('Everything is published.');
+      expect(list.container.innerHTML).not.toMatch(/undefined|\bNaN\b/);
+      list.unmount();
+
+      act(() => runtime.renderVals().liveForm!.addNew());
+      const add = render(<AppFrame v={runtime.renderVals()} />);
+      expect(add.container.textContent).toContain('Save product');
+      expect(add.container.innerHTML).not.toMatch(/undefined|\bNaN\b/);
+      add.unmount();
+
+      const i = PRODUCTS.findIndex((p) => p.id === 'wcb');
+      act(() => runtime.renderVals().productRows[i]!.edit());
+      const edit = render(<AppFrame v={runtime.renderVals()} />);
+      expect(edit.container.textContent).toContain(WCB.name);
+      const badge = edit.getByLabelText('Shop label (optional)');
+      expect(
+        document.getElementById(badge.getAttribute('aria-describedby') ?? '')?.textContent
+      ).toContain('Shown beside the name on the order form.');
+      expect(edit.container.innerHTML).not.toMatch(/undefined|\bNaN\b/);
+      edit.unmount();
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a stale-open editor gets a conflict instead of silently reverting a concurrent quick edit', async () => {
+    const db = rowsFor((id) => id !== 'nch');
+    const wcb = db.find((r) => r.id === 'wcb')!;
+    const rpc = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+      if (name === 'get_flavours') return { data: db.map((r) => ({ ...r })), error: null };
+      if (name === 'publish_flavours') return { data: [], error: null };
+      const row = db.find((r) => r.id === args?.p_id);
+      if (!row) return { data: null, error: { code: '22023', message: 'unknown' } };
+      if (args?.p_expected_updated_at !== row.updated_at) {
+        return { data: null, error: { code: 'P0002', message: 'stale' } };
+      }
+      row.updated_at = new Date(Date.parse(row.updated_at) + 3600_000).toISOString();
+      row.active = (args!.p_flavour as { active: boolean }).active;
+      row.price_cents = (args!.p_flavour as { price_cents: number }).price_cents;
+      return { data: [{ id: row.id, updated_at: row.updated_at }], error: null };
+    });
+    const ref: { current: OpsRuntime | null } = { current: null };
+    render(<OpsRuntime ref={(r) => void (ref.current = r)} />);
+    const runtime = ref.current!;
+    act(() => runtime.setRole('owner'));
+    await act(async () => {
+      await runtime.loadFlavours({ rpc } as unknown as FlavoursClient);
+    });
+
+    // Open the editor for wcb: freezes its updated_at at whatever it is right now.
+    const i = PRODUCTS.findIndex((p) => p.id === 'wcb');
+    act(() => runtime.renderVals().productRows[i]!.edit());
+    const frozen = runtime.renderVals().liveForm!.editing!;
+    expect(frozen.active).toBe(true);
+
+    // A concurrent quick edit lands while the form stays open, moving updated_at forward.
+    await act(async () => {
+      runtime.toggleDropProduct('wcb');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(wcb.active).toBe(false);
+
+    // Submitting the still-open, now-stale form must not silently turn it back on.
+    await act(async () => {
+      frozen.save({
+        name: frozen.name,
+        shortName: frozen.shortName,
+        description: frozen.description,
+        imagePath: frozen.imagePath,
+        allergens: frozen.allergens,
+        badge: frozen.badge,
+        kind: frozen.kind,
+        itemType: frozen.itemType,
+        capacityWeight: frozen.capacityWeight,
+        sortOrder: frozen.sortOrder,
+        price: frozen.price,
+        active: frozen.active
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Mutation check: without freezing updated_at at open time, this save would carry a
+    // fresh (matching) updated_at alongside the form's stale fields, pass save_flavour's
+    // conflict check and silently turn wcb back on to the order form.
+    expect(wcb.active).toBe(false);
+    expect((runtime.state.dropActive as Record<string, boolean>).wcb).toBe(false);
+    expect(toastText(runtime)).toContain(FLAVOUR_TOASTS.conflict);
+  });
+
+  it('rejects a blank price instead of silently saving it as ₱0', async () => {
+    const { runtime, rpc } = await mounted('owner');
+    act(() => runtime.renderVals().productRows[PRODUCTS.findIndex((p) => p.id === 'wcb')]!.edit());
+    const editing = runtime.renderVals().liveForm!.editing!;
+    await act(async () => {
+      editing.save({
+        name: editing.name,
+        shortName: editing.shortName,
+        description: editing.description,
+        imagePath: editing.imagePath,
+        allergens: editing.allergens,
+        badge: editing.badge,
+        kind: editing.kind,
+        itemType: editing.itemType,
+        capacityWeight: editing.capacityWeight,
+        sortOrder: editing.sortOrder,
+        price: NaN, // what live-form-host.tsx's fieldNumber() sends for a blank field
+        active: editing.active
+      });
+    });
+    // Mutation check: without the NaN check, this would send price_cents: 0 to save_flavour.
+    expect(rpc).not.toHaveBeenCalled();
+    expect(toastText(runtime)).toContain('Price is out of range');
+  });
+});

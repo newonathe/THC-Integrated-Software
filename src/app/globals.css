@@ -1,0 +1,575 @@
+@import 'tailwindcss';
+
+/* ==========================================================================
+   Design tokens — the exact values signed off in the prototype.
+   Any new UI must compose from these; nothing here is approximate.
+   ========================================================================== */
+@theme {
+  --font-sans: var(--font-onest), 'SF Pro Text', -apple-system, system-ui, sans-serif;
+  --font-display:
+    var(--font-baloo), var(--font-onest), system-ui, sans-serif; /* page titles, lowercase */
+  --font-mono: var(--font-jbmono), ui-monospace, 'SF Mono', monospace; /* figures and captions */
+
+  /* ink */
+  --color-ink: #3a1f14; /* primary text */
+  --color-ink-soft: #6e574b; /* secondary text */
+  --color-ink-mute: #66524a; /* captions */
+  --color-ink-faint: #8a7062; /* disclaimers */
+  --color-ink-hint: #a98a5f; /* hint text on warm surfaces */
+
+  /* surface */
+  --color-surface: #ffffff;
+  --color-raise: #fbfaf9;
+  --color-inset: #f8f6f4;
+  --color-divide: #f2eeeb;
+  --color-app: #f1efee;
+  --color-chip: #f4f1ee;
+  --color-warm-card: #fffdf9;
+
+  /* line */
+  --color-line: #ede8e4;
+  --color-line-strong: #e7e1dc;
+  --color-line-mute: #e4ddd8;
+
+  /* brand */
+  --color-brand: #c24a15;
+  --color-brand-deep: #a93d0f;
+  --color-accent: #e75f23;
+
+  /* customer-facing warm palette */
+  --color-cust-bg: #fff5e5;
+  --color-cust-line: #f0e2cb;
+  --color-warm-line: #eadcc4;
+  --color-warm-inset: #fffbf3;
+  --color-warm-high: #fdf3e2;
+  --color-warm-accent: #efdcb5;
+  --color-warm-chip: #e4d2b4;
+
+  /* semantic */
+  --color-ok: #1b7a4b;
+  --color-ok-strong: #14603a;
+  --color-ok-fill: #e8f5ee;
+  --color-ok-line: #c6e5d5;
+  --color-warn: #95600a;
+  --color-warn-strong: #7a4e08;
+  --color-warn-dot: #c98a12;
+  --color-warn-body: #8a5b10;
+  --color-danger: #a8231b;
+  --color-danger-line: #f2cfcb;
+  --color-info-fill: #eef4fe;
+  --color-info-line: #cfe0fb;
+
+  /* radius */
+  --radius-tag: 6px;
+  --radius-chip: 9px;
+  --radius-control: 12px;
+  --radius-card: 18px;
+  --radius-sheet: 26px;
+
+  /* shadow */
+  --shadow-chip: 0 1px 3px -1px rgb(58 31 20 / 0.22);
+  --shadow-brand: 0 3px 12px -4px rgb(231 95 35 / 0.55);
+  --shadow-lift: 0 5px 10px -3px rgb(58 31 20 / 0.28);
+
+  /* motion */
+  --ease-out-quint: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-pop: cubic-bezier(0.3, 1.5, 0.5, 1);
+  --animate-rise: hcRise 0.3s ease-out;
+  --animate-sheet: hcSheet 0.26s ease-out;
+  --animate-fade: hcFade 0.18s ease-out;
+  --animate-pop: hcPop 0.26s var(--ease-pop);
+  --animate-spin-slow: hcSpin 1s linear infinite;
+  --animate-breathe: hcBreathe 1.8s infinite;
+}
+
+/* Owner theme approved 2 November 2026: neutral light, Happy Cookie branding, selective glass.
+   Separate tokens leave the locked demo palette intact. */
+@theme static {
+  /* Behind a cookie photo: the cream every product photo is shot on, as the approved mockup draws it. */
+  --color-photo-well: #fff8e9;
+  --color-owner-app: #f4f5f7;
+  /* Owner palette restored to the pre-espresso light neutrals (approved 16 Nov 2026). */
+  --color-owner-ink: #24262b;
+  --color-owner-muted: #61656d;
+  --color-owner-faint: #858a94;
+  --color-owner-raise: #f8f9fb;
+  --color-owner-line: #e3e6eb;
+  --color-owner-soft: #eceff3;
+  --color-on-ground: #fff1e6; /* Owner workspace overrides this locally for its light ground. */
+  --color-owner-glass: rgb(255 255 255 / 0.8);
+  --color-owner-glass-strong: rgb(255 255 255 / 0.94);
+  --shadow-owner-glass: 0 8px 32px rgb(24 28 36 / 0.06);
+  /* Option A (approved 19 Nov 2026): translucent containers; no marble ground since Cine's review (19 Nov). One recipe, below. */
+  --color-owner-card: rgb(255 255 255 / 0.5);
+  --color-owner-card-line: rgb(255 255 255 / 0.85);
+  --color-owner-card-inner: rgb(255 255 255 / 0.55);
+  --color-owner-bar: rgb(255 255 255 / 0.55);
+  --shadow-owner-card: 0 18px 40px rgb(70 55 40 / 0.1), inset 0 1px 0 rgb(255 255 255 / 0.9);
+  --shadow-owner-bar: 0 16px 40px rgb(60 45 30 / 0.14);
+  --blur-owner-card: blur(28px) saturate(1.6);
+  --blur-owner-card-phone: blur(18px) saturate(1.5);
+  --ease-owner-spring: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-owner: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-owner-fast: 140ms;
+  --dur-owner-base: 220ms;
+  --dur-owner-sheet: 280ms;
+}
+
+/* ==========================================================================
+   Bazaar v2 tokens. New names, no new colour.
+   `static` so they are always emitted: the live screens read them through var() in
+   inline styles, which Tailwind would not see as a use.
+   ========================================================================== */
+@theme static {
+  /* spacing scale: gaps and padding in live screens */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* type scale (approved 15 November 2026): six roles and nothing in between. Weights are 400, 600 and 700 only:
+     700 for display and title, 600 for headings, labels and one emphasised item per row, 400 for everything else.
+     Figures are proportional; tabular figures only in right-aligned amount columns. Nothing smaller than 13px
+     except the phone tab bar's labels. */
+  --text-display: 32px; /* one hero figure per screen: the charge total, the profit */
+  --text-display--line-height: 1.125;
+  --text-display--font-weight: 700;
+  --text-display--letter-spacing: -0.02em;
+  --text-page: 30px; /* owner page title on a phone (Baloo 2, lowercase); 36px from md */
+  --text-page--line-height: 1.1;
+  --text-page--font-weight: 600;
+  --text-page-lg: 36px;
+  --text-page-lg--line-height: 1.1;
+  --text-page-lg--font-weight: 600;
+  --text-title: 24px; /* the page and sheet title, once per screen */
+  --text-title--line-height: 1.25;
+  --text-title--font-weight: 700;
+  --text-title--letter-spacing: -0.015em;
+  --text-heading: 18px; /* card and section titles, empty-state titles */
+  --text-heading--line-height: 1.333;
+  --text-heading--font-weight: 600;
+  --text-body: 16px; /* row names, values, inputs, descriptions */
+  --text-body--line-height: 1.5;
+  --text-body--font-weight: 400;
+  --text-label: 14px; /* buttons, chips, tabs, form labels, pills; weight from the control */
+  --text-label--line-height: 1.43;
+  --text-caption: 13px; /* second lines, dates, helper text (muted) */
+  --text-caption--line-height: 1.385;
+  --text-caption--font-weight: 400;
+
+  /* motion: fast = exits, base = most changes, slow = large entries */
+  --dur-fast: 150ms;
+  --dur-base: 250ms;
+  --dur-slow: 400ms;
+  --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1); /* M3 emphasized decelerate */
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15); /* M3 emphasized accelerate */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* sheet backdrop: ink at 40 %, as the shadows */
+  --color-scrim: rgb(58 31 20 / 0.4);
+}
+
+/* ==========================================================================
+   Base layer — carried over from the prototype unchanged.
+   ========================================================================== */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: #f1efee;
+    font-family: var(--font-sans);
+    color: #3a1f14;
+    -webkit-font-smoothing: antialiased;
+  }
+  a {
+    color: #c24a15;
+    text-decoration: none;
+  }
+  a:hover {
+    color: #e75f23;
+    text-decoration: underline;
+  }
+  button {
+    font-family: inherit;
+    cursor: pointer;
+    color: inherit;
+  }
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+    color: #3a1f14;
+  }
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #e75f23;
+    outline-offset: 2px;
+  }
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #e4ddd8;
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  @keyframes hcRise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes hcSheet {
+    from {
+      opacity: 0;
+      transform: translateY(30px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes hcFade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes hcSpin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes hcBreathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+  @keyframes hcPop {
+    0% {
+      opacity: 0;
+      transform: scale(0.5) translateY(6px);
+    }
+    100% {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes hcScrFwdA {
+    from {
+      opacity: 0;
+      transform: translate3d(10px, 0, 0);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes hcScrFwdB {
+    from {
+      opacity: 0;
+      transform: translate3d(10px, 0, 0);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes hcScrBackA {
+    from {
+      opacity: 0;
+      transform: translate3d(-10px, 0, 0);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes hcScrBackB {
+    from {
+      opacity: 0;
+      transform: translate3d(-10px, 0, 0);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ==========================================================================
+   Bazaar v2 motion utilities (spec section 4). Only transform and opacity animate.
+   Everything stops under reduced motion (the rules at the end of this file).
+   ========================================================================== */
+@layer components {
+  /* Arrives: a list row, a card, a new event. @starting-style gives the first frame. */
+  .motion-enter {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity var(--dur-base) var(--ease-enter),
+      transform var(--dur-base) var(--ease-enter);
+    @starting-style {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+  /* Leaves: set data-leaving="true" and keep the node mounted until the transition ends (usePresence). */
+  .motion-leave {
+    transition:
+      opacity var(--dur-fast) var(--ease-exit),
+      transform var(--dur-fast) var(--ease-exit);
+  }
+  .motion-leave[data-leaving='true'] {
+    opacity: 0;
+    transform: scale(0.98);
+    pointer-events: none;
+  }
+  /* A row that arrives and later leaves (a list line): rises in over 250 ms, fades out over 150 ms. */
+  .motion-enter.motion-leave {
+    transition:
+      opacity var(--dur-base) var(--ease-enter),
+      transform var(--dur-base) var(--ease-enter);
+  }
+  .motion-enter.motion-leave[data-leaving='true'] {
+    transition-duration: var(--dur-fast);
+    transition-timing-function: var(--ease-exit);
+  }
+  /* The figures behind a stat tile: rise 4 px with a fade on open (250 ms), back out on close (150 ms). */
+  .motion-parts {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity var(--dur-base) var(--ease-enter),
+      transform var(--dur-base) var(--ease-enter);
+    @starting-style {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  .motion-parts[data-leaving='true'] {
+    opacity: 0;
+    transform: translateY(4px);
+    transition-duration: var(--dur-fast);
+    transition-timing-function: var(--ease-exit);
+  }
+  /* Rises from 8 px with a fade: the error summary, the stat parts. */
+  .motion-rise {
+    animation: hcRise var(--dur-base) var(--ease-enter) both;
+  }
+  /* Drops in from the top edge: the "Back to the till" banner. */
+  .motion-drop {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity var(--dur-base) var(--ease-enter),
+      transform var(--dur-base) var(--ease-enter);
+    @starting-style {
+      opacity: 0;
+      transform: translateY(-100%);
+    }
+  }
+  .motion-drop[data-leaving='true'] {
+    opacity: 0;
+    transform: translateY(-100%);
+    transition-duration: var(--dur-fast);
+    transition-timing-function: var(--ease-exit);
+  }
+  /* A sheet: rises 30 px (or slides in from the right) over 400 ms; leaves in 150 ms. */
+  .motion-sheet {
+    --sheet-from: translateY(30px);
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity var(--dur-slow) var(--ease-enter),
+      transform var(--dur-slow) var(--ease-enter);
+    @starting-style {
+      opacity: 0;
+      transform: var(--sheet-from);
+    }
+  }
+  .motion-sheet[data-side='right'] {
+    --sheet-from: translateX(30px);
+  }
+  @media (min-width: 768px) {
+    .motion-sheet[data-side='auto'] {
+      --sheet-from: translateX(30px);
+    }
+  }
+  .motion-sheet[data-leaving='true'] {
+    opacity: 0;
+    transform: var(--sheet-from);
+    transition-duration: var(--dur-fast);
+    transition-timing-function: var(--ease-exit);
+  }
+  .motion-scrim {
+    opacity: 1;
+    transition: opacity var(--dur-base) var(--ease-standard);
+    @starting-style {
+      opacity: 0;
+    }
+  }
+  .motion-scrim[data-leaving='true'] {
+    opacity: 0;
+    transition-duration: var(--dur-fast);
+    transition-timing-function: var(--ease-exit);
+  }
+  /* The press scale of every button. */
+  .motion-press {
+    transition:
+      transform 100ms var(--ease-standard),
+      background-color var(--dur-base) var(--ease-standard);
+  }
+  .motion-press:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  /* A count badge ticks when its number changes: set data-tick and toggle it. */
+  .motion-tick {
+    animation: hcTick var(--dur-base) var(--ease-pop);
+  }
+  /* The ring that fades after a new event saves. */
+  .motion-ring {
+    animation: hcRing 600ms var(--ease-standard) both;
+  }
+  /* A day closes: the stat tiles come back from a dimmer state to full (U5). */
+  .motion-settle {
+    animation: hcSettle var(--dur-base) var(--ease-standard) both;
+  }
+  .motion-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--color-chip) 25%,
+      var(--color-divide) 50%,
+      var(--color-chip) 75%
+    );
+    background-size: 200% 100%;
+    animation: hcShimmer 1.4s linear infinite;
+  }
+}
+@keyframes hcTick {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+}
+@keyframes hcRing {
+  from {
+    box-shadow: 0 0 0 3px var(--color-warm-accent);
+  }
+  to {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+@keyframes hcSettle {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes hcShimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* View transitions: a filter chip or any other swap cross-fades over 250 ms; the recipe photo morphs over 400 ms.
+   The old and new images inherit the group's duration. */
+::view-transition-group(*) {
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-standard);
+}
+::view-transition-group(flavour-photo) {
+  animation-duration: var(--dur-slow);
+  animation-timing-function: var(--ease-enter);
+}
+
+/* The global rule above does not reach the view-transition pseudo-elements; this does.
+   useViewTransition also skips document.startViewTransition under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+  .motion-press:active:not(:disabled) {
+    transform: none;
+    /* The pressed state is a fill instead of a scale. */
+    box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--color-ink) 12%, transparent);
+  }
+  .motion-shimmer {
+    animation: none;
+  }
+}
+
+/* ==========================================================================
+   Option A glass surface (approved 19 Nov 2026). Every owner container opts in with `hc-surface` (PANEL_CLASS) or the
+   card modules; the owner workspace turns it on with data-glass="on". Nested surfaces never blur twice.
+   ========================================================================== */
+[data-glass='on'] .hc-surface {
+  border-color: var(--color-owner-card-line);
+  background: var(--color-owner-card);
+  box-shadow: var(--shadow-owner-card);
+  -webkit-backdrop-filter: var(--blur-owner-card);
+  backdrop-filter: var(--blur-owner-card);
+}
+[data-glass='on'] .hc-surface .hc-surface {
+  background: var(--color-owner-card-inner);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+@media (max-width: 650px) {
+  [data-glass='on'] .hc-surface {
+    -webkit-backdrop-filter: var(--blur-owner-card-phone);
+    backdrop-filter: var(--blur-owner-card-phone);
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  [data-glass='on'] .hc-surface {
+    background: var(--color-owner-glass-strong);
+  }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  [data-glass='on'] .hc-surface {
+    border-color: var(--color-owner-line);
+    background: #fff;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

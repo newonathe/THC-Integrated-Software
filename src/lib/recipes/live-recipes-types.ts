@@ -1,0 +1,98 @@
+import type { CostSource, MarginTone, ReceiptView } from './book';
+
+/**
+ * What the live recipe book (U7) is given: made by `RecipeBook` in the store, drawn by `components/live/recipes`. Every
+ * figure arrives written, so the screen holds no money rule.
+ */
+export interface RecipeBookItem {
+  id: string;
+  name: string;
+  /** A stored image path; may be empty. */
+  photo: string;
+  onMenu: boolean;
+  priceText: string;
+  /** "₱31.25", or "Cost pending". */
+  costText: string;
+  costSource: CostSource;
+  /** "Typed by you on 15 Oct", "From the recipe", "No cost per cookie yet". */
+  sourceText: string;
+  /** "75%", or "—". */
+  marginText: string;
+  /** What a cookie keeps at its price: "₱93.75"; null while the cost is not known. */
+  keptText: string | null;
+  tone: MarginTone;
+  /** The recipe's own cost receipt; null when the recipe's cost was not read. */
+  receipt: ReceiptView | null;
+  /** Said under the receipt: why it is shown ("For comparison: the recipe's cost today."). */
+  receiptNote: string | null;
+  /** What the cost field starts with: her cost, else the recipe's. */
+  startingCost: string;
+  /** True when she typed a cost for this flavour (so "Use the recipe's cost" has something to take away). */
+  typed: boolean;
+  /** Saves the cost field; blank goes back to the recipe's. Resolves to words when it did not save, null when it did. */
+  save: (pesos: string) => Promise<string | null>;
+  /** Why the field cannot be saved now, said once under it; null when it can. */
+  saveBlocked: string | null;
+  /** Opens the older Recipes screen on this flavour. */
+  editRecipe: () => void;
+}
+
+/**
+ * HCB-038: what is said about an unsaved edit that survived a reload. `offer`: it is held and not applied; `newer`: a newer
+ * version was saved since, so it was not kept (said once, then `dismiss`).
+ */
+export interface KeptRecipeEditView {
+  kind: 'offer' | 'newer';
+  restore: () => void;
+  discard: () => void;
+  dismiss: () => void;
+}
+
+export interface LiveRecipesVals {
+  /** The kept unsaved edit of one flavour, or null when there is none to say anything about. */
+  keptEdit?: (id: string) => KeptRecipeEditView | null;
+  /** The editor's place in the address (HCB-013): the flavour an address asks to reopen in the editor, and the editor reporting its own state. */
+  editor?: {
+    restore: string | null;
+    report: (id: string | null) => void;
+  };
+  recipePage?: {
+    id: string;
+    name: string;
+    photo: string;
+    state: 'loading' | 'read' | 'failed';
+    yieldText: string | null;
+    versionText: string | null;
+    /** Cookies one batch of the saved recipe makes; 0 when there is no saved recipe. */
+    savedYield: number;
+    createRecipe?: () => boolean;
+    rows: Array<{
+      name: string;
+      amountText: string;
+      qty: number;
+      unit: string;
+      kind?: 'ingredient' | 'packaging' | null;
+    }>;
+    /** Recorded stock of what the recipe uses, for reading only. Absent before stock is read. */
+    stock?: Array<{
+      name: string;
+      unit: string;
+      onHand: number;
+      counted: boolean;
+      count?: () => void;
+    }>;
+    startProduction?: (cookies?: number) => void;
+    /** Drops the unsaved changes to this recipe, back to its last saved version. */
+    discardEdit?: () => void;
+    back: () => void;
+    refresh: () => void;
+  };
+  online: boolean;
+  /** How the costs were read: `read`, still `loading`, or `failed` (the figures may then differ from the events'). */
+  state: 'read' | 'loading' | 'failed';
+  /** Said above the book when something could not be read; null when all is well. */
+  note: string | null;
+  items: RecipeBookItem[];
+  /** Reads her typed costs again (the book calls it when it opens, and "Try again" calls it). */
+  refresh: () => void;
+}

@@ -1,0 +1,148 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import { useOpsEngine, useOpsVals } from '@/store/use-ops';
+import { isLiveMode } from '@/lib/config/app-mode';
+import { CUSTOMER_SCREENS, type ScreenKey } from '@/lib/screens';
+import { enqueueSale, hasRetryable, saleClientId } from '@/lib/offline/queue';
+import { startQueueRetry } from '@/lib/offline/retry';
+import { flushQueue, requestBackgroundSync, type FlushOptions } from '@/lib/offline/sync';
+import { warmOfflineShell } from '@/lib/offline/shell';
+import type { EventSalesClient } from '@/lib/data/event-sales';
+import type { EventSale } from '@/store/engine/ops-engine';
+
+/**
+ * Durability for bazaar sales, and the real online/offline signal.
+ *
+ * Four jobs, none of which the engine should know about:
+ *   1. every sale the engine records is mirrored into IndexedDB before anything else,
+ *      so closing the tab or a dead battery cannot lose it;
+ *   2. the browser's own connectivity drives the engine's online flag (the prototype's
+ *      manual toggle still works, and still wins, for demoing);
+ *   3. opening the app, coming back online, a wake-up from the service worker, or the retry
+ *      timer while something is waiting (live only) flushes the queue;
+ *   4. once the service worker is ready, the phone stores its own scripts so it can
+ *      reload with no signal (`data-hc-offline-ready` says when).
+ */
+export function OfflineBridge() {
+  // The subscription: without reading the render values this component never re-renders,
+  // so a sale recorded after mount would never reach the queue.
+  useOpsVals();
+  const engine = useOpsEngine();
+  const mirrored = useRef<Set<string>>(new Set());
+  const [retry, setRetry] = useState(0);
+  const sales = engine.state.sales;
+  const salesClient = () =>
+    (engine as unknown as { saleClient?: EventSalesClient | null }).saleClient ?? null;
+  // The runtime flushes and then makes the sale rows on screen say what the queue says.
+  const flush = (options?: FlushOptions) => {
+    const runtime = engine as unknown as {
+      flushSales?: (options?: FlushOptions) => Promise<unknown>;
+    };
+    return runtime.flushSales ? runtime.flushSales(options) : flushQueue(salesClient(), options);
+  };
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    // Next development chunk URLs can be reused after edits; a cache-first worker serves stale code.
+    const development = process.env.NODE_ENV === 'development';
+    navigator.serviceWorker
+      .register(development ? '/dev-sw.js' : '/sw.js')
+      .then(() => (development ? false : warmOfflineShell()))
+      .then((ready) => {
+        if (ready) document.documentElement.dataset.hcOfflineReady = 'true';
+      })
+      .catch(() => {
+        /* the app still works without it; only reload-offline and background retry are lost */
+      });
+    const wake = (event: MessageEvent<{ type?: string }>) => {
+      if (event.data?.type === 'hc-flush') void flush();
+    };
+    navigator.serviceWorker.addEventListener('message', wake);
+    if (navigator.onLine) void flush();
+    return () => navigator.serviceWorker.removeEventListener('message', wake);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const event = engine.state.event;
+    const eventId = (event && event.id) || null;
+    const keyOf = (sale: EventSale & { clientId?: string }) => saleClientId(sale);
+    // S2: a sale that is synced and has a client id of its own was taken back from the server: it is already held there, and
+    // queueing it under this device's id would send the same sale twice. One that has an id of its own but is not synced is
+    // this phone's (the day was read again before its copy reached IndexedDB): it is queued under that id, never skipped.
+    const fresh = sales.filter(
+      (sale: EventSale & { clientId?: string }) =>
+        !(sale.clientId && sale.synced) && !mirrored.current.has(keyOf(sale))
+    );
+    if (!fresh.length) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void (async () => {
+      let unsaved = 0;
+      for (const sale of fresh) {
+        try {
+          await enqueueSale(
+            {
+              saleId: sale.id,
+              eventId,
+              items: sale.items,
+              gross: sale.gross,
+              discount: sale.discount,
+              total: sale.total,
+              pay: sale.pay,
+              ref: sale.ref,
+              clerk: sale.clerk,
+              at: sale.at,
+              tendered: sale.tendered,
+              change: sale.change
+            },
+            keyOf(sale)
+          );
+          mirrored.current.add(keyOf(sale));
+        } catch {
+          unsaved += 1;
+        }
+      }
+      if (unsaved) {
+        engine.toast('A sale could not be saved on this phone yet. Keep the app open.', 'warn');
+        timer = setTimeout(() => setRetry((n) => n + 1), 3000);
+        return;
+      }
+      if (navigator.onLine) await flush();
+      else await requestBackgroundSync();
+    })();
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sales, engine, retry]);
+
+  useEffect(() => {
+    if (!isLiveMode()) return;
+    return startQueueRetry({
+      // A customer's page has no staff session to send with.
+      hasRetryable: async () =>
+        !CUSTOMER_SCREENS.includes(engine.state.screen as ScreenKey) && hasRetryable(),
+      flush: () => flush({ skipRefused: true })
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const sync = () => {
+      if (!engine.state.online) engine.toggleOnline();
+      void flush();
+    };
+    const drop = () => {
+      if (engine.state.online) engine.toggleOnline();
+    };
+    window.addEventListener('online', sync);
+    window.addEventListener('offline', drop);
+    if (!navigator.onLine && engine.state.online) drop();
+    return () => {
+      window.removeEventListener('online', sync);
+      window.removeEventListener('offline', drop);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine]);
+
+  return null;
+}

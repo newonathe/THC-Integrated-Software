@@ -1,0 +1,181 @@
+import type { OrderStatusView } from '@/lib/data/orders';
+import { dayTimeLabel } from '@/lib/date/display';
+import { ORDER_COPY } from '@/lib/orders/copy';
+import { contactOr, ownerOr, withContact } from '@/lib/orders/identity';
+import { clockLabel } from '@/lib/orders/pickup';
+
+/**
+ * The `cust` values the ported order-status screen reads, built from `order_status()` instead of the
+ * engine's local orders (B2). The screen's markup is untouched: only these values change.
+ *
+ * Sentences the prototype already had and the owner signed off are reused word for word where they
+ * are still true (the titles and bodies below that are not in `ORDER_COPY`). The ported "We have your
+ * order and your payment proof" is not true here (an order is placed unpaid and proof stays in the
+ * DMs), so the received state says something else. Every new line is in `ORDER_COPY.status`, marked
+ * PLACEHOLDER until the owner words it. Where a ported sentence named her, it now asks
+ * `identity.ts` for her own name and contact line, or says it without one (audit H14).
+ */
+export interface StatusCust {
+  heroTitle: string;
+  heroBody: string;
+  orderNo: string;
+  /** Empty: the ported "Invoice INV-…" line is never shown in live mode (F10). */
+  invoiceLine: string;
+  showRetry: false;
+  showCode: false;
+  pickupCode: string;
+  windowText: string;
+  allergenNote: string;
+  timeline: Array<{ what: string; sub: string; done: boolean; now: boolean; todo: boolean }>;
+}
+
+/** How far an order has got: 0 paid, 1 baking, 2 ready, 3 collected. A no-show missed a ready box. */
+const RANK: Record<string, number> = {
+  Confirmed: 0,
+  Preparing: 1,
+  Ready: 2,
+  'No-show': 2,
+  Completed: 3
+};
+
+function whenText(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return dayTimeLabel(d);
+}
+
+/** `2026-10-08` and `10:30` (or `campus`) as `Thu, Oct 8 · 10:30 AM`. */
+export function pickupLabel(
+  date: string | null,
+  window: string | null,
+  savedLabel?: string
+): string {
+  if (!date) return '';
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!parts) return '';
+  const [y, m, d] = [Number(parts[1]), Number(parts[2]), Number(parts[3])] as [
+    number,
+    number,
+    number
+  ];
+  const at = new Date(Date.UTC(y, m - 1, d));
+  // A date that rolls over (30 February) is malformed, not March 2.
+  if (at.getUTCFullYear() !== y || at.getUTCMonth() !== m - 1 || at.getUTCDate() !== d) return '';
+  const day = at.toLocaleDateString('en-US', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric'
+  });
+  if (!window) return day;
+  return day + ' · ' + (window === 'campus' ? (savedLabel ?? 'Campus pickup') : clockLabel(window));
+}
+
+export function pickupText(order: OrderStatusView): string {
+  return pickupLabel(order.pickupDate, order.pickupWindow, order.pickupLabel);
+}
+
+function step(what: string, sub: string, done: boolean, now: boolean) {
+  return { what, sub, done, now, todo: !done && !now };
+}
+
+export function statusCust(
+  order: OrderStatusView,
+  opts: { allergenNote: string; now?: number }
+): StatusCust {
+  const S = ORDER_COPY.status;
+  const now = opts.now ?? Date.now();
+  const st = order.state;
+  const paidConfirmed = order.payState === 'confirmed';
+  const unpaid = order.payState === 'unpaid';
+  const rank = RANK[st] ?? -1;
+  const reached = (k: number) => rank >= k;
+  const held = order.holdExpiresAt ? whenText(order.holdExpiresAt) : '';
+  const lapsed = unpaid && !!order.holdExpiresAt && new Date(order.holdExpiresAt).getTime() <= now;
+  let heroTitle: string;
+  let heroBody: string;
+  if (st === 'Payment review') {
+    heroTitle = 'Order received';
+    heroBody = paidConfirmed
+      ? S.paymentRecorded
+      : !unpaid
+        ? S.paymentChecking
+        : lapsed
+          ? S.lapsed
+          : held
+            ? S.receivedHeld(order.payMethod, held)
+            : S.receivedNoHold;
+  } else if (st === 'Cancelled') {
+    heroTitle = 'Order cancelled';
+    heroBody = S.cancelledBody;
+  } else if (st === 'No-show') {
+    heroTitle = 'You missed your slot';
+    heroBody = withContact('Nobody collected during your window.');
+  } else if (st === 'Ready') {
+    heroTitle = 'Your box is ready';
+    heroBody = S.readyBody;
+  } else if (st === 'Completed') {
+    heroTitle = 'Collected — thank you';
+    heroBody = withContact('Enjoy them.');
+  } else {
+    heroTitle = paidConfirmed ? 'Payment confirmed' : 'Order received';
+    heroBody = paidConfirmed ? S.paymentRecorded : S.paymentChecking;
+  }
+  const campus = order.pickupWindow === 'campus';
+  const timeline =
+    st === 'Cancelled'
+      ? [
+          step('Order received', S.stepReceived, true, false),
+          step('Cancelled', S.stepCancelled, false, true)
+        ]
+      : [
+          step('Order received', S.stepReceived, true, false),
+          step(
+            paidConfirmed ? 'Payment confirmed' : 'Payment',
+            paidConfirmed
+              ? 'Confirmed by ' + ownerOr('the shop')
+              : !unpaid
+                ? S.paymentChecking
+                : lapsed
+                  ? S.stepLapsed
+                  : S.stepWaiting,
+            paidConfirmed,
+            !paidConfirmed && !reached(0) && !lapsed
+          ),
+          step(
+            'Baking',
+            reached(2) ? S.preparationComplete : reached(1) ? S.preparing : S.preparationWaiting,
+            reached(1),
+            reached(0) && !reached(1)
+          ),
+          step(
+            'Ready for pickup',
+            reached(2) ? S.stepReady : campus ? (order.pickupLabel ?? S.stepCampus) : S.stepAddress,
+            reached(2),
+            reached(1) && !reached(2)
+          ),
+          step(
+            st === 'No-show' ? 'Missed collection' : 'Collected',
+            st === 'No-show'
+              ? contactOr('Ask for a new slot')
+              : reached(3)
+                ? 'Thank you'
+                : 'During your window',
+            reached(3),
+            st === 'No-show'
+          )
+        ];
+  return {
+    heroTitle,
+    heroBody,
+    orderNo: order.orderNo,
+    invoiceLine: '',
+    showRetry: false,
+    showCode: false,
+    pickupCode: '',
+    windowText: pickupText(order),
+    allergenNote: opts.allergenNote,
+    timeline
+  };
+}

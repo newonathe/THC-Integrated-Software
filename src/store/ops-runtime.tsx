@@ -1,0 +1,12424 @@
+'use client';
+
+import { dayLabel, dayTimeLabel } from '@/lib/date/display';
+import { OrderRecovery } from '@/lib/orders/order-recovery';
+import {
+  fetchProductTypes,
+  saveProductType,
+  typeIdFor,
+  typeLabelError,
+  type Behaviour,
+  type ProductType,
+  type ProductTypes,
+  type ProductTypesClient
+} from '@/lib/data/product-types';
+import { CustomerOrderSources } from '@/store/customer-order-sources';
+import { ShopMenuRead } from '@/store/shop-menu-read';
+import { ShopAvailabilityRead } from '@/store/shop-availability-read';
+import { ShopOverrideWrites, shopOverrideMode } from '@/store/shop-override-writes';
+import { cartWords } from '@/lib/orders/cart-words';
+import { openingTimesBanner } from '@/components/live/customer-opening-status';
+import { ScopedRecipeEdits } from '@/lib/recipes/scoped-edits';
+import {
+  keptRecipeFacts,
+  readKeptRecipeEdits,
+  writeKeptRecipeEdits,
+  type KeptRecipeEdit
+} from '@/lib/recipes/kept-edits';
+
+import { bazaarBooking, type BazaarRoute } from '@/lib/bazaar/navigation';
+
+import {
+  ALLERGENS,
+  BASE_STATE,
+  DEFAULT_CFG,
+  OpsProvider,
+  PESO,
+  PESO2,
+  PRODUCTS,
+  ROLES,
+  relWhen,
+  replaceFlavours,
+  replacePayAccounts
+} from '@/store/engine/ops-engine';
+import * as engineModule from '@/store/engine/ops-engine';
+import { renderWithSaleLabels } from '@/lib/display/sale-product-labels';
+import type {
+  EngineFlavour,
+  EventSale,
+  OpsEngineProps,
+  OpsEngineState,
+  Role
+} from '@/store/engine/ops-engine';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Database } from '@/lib/types/database';
+import { idb } from '@/lib/offline/idb';
+import {
+  fetchOperationsHealth,
+  healthView,
+  HEALTH_REFRESH_MS,
+  SETUP_PENDING_COPY,
+  type HealthPhase,
+  type LiveAlert,
+  type OperationsClient,
+  type OperationsHealth
+} from '@/lib/data/operations-health';
+import {
+  defaultSalesClient,
+  flushQueue,
+  requestBackgroundSync,
+  type FlushOptions,
+  type FlushResult
+} from '@/lib/offline/sync';
+import {
+  allSales,
+  commandKey,
+  enqueueCommand,
+  enqueueVoid,
+  isCommandRow,
+  isSaleKey,
+  isVoidRow,
+  pendingSales,
+  saleClientId,
+  splitForEvent,
+  unsentForEvent,
+  voidKey,
+  type CommandKind
+} from '@/lib/offline/queue';
+import { mergeDay, type LocalDaySale } from '@/lib/bazaar/day-merge';
+import { canWatchDay, watchDay, type LiveDay } from '@/lib/bazaar/live-day';
+import { clearBazaar, readBazaar, saveBazaar } from '@/lib/offline/bazaar-state';
+import {
+  readCountRecovery,
+  writeCountRecovery,
+  type CountRecovery
+} from '@/lib/stock/count-recovery';
+import { holdCountLock } from '@/lib/stock/count-lock';
+import { readClassicTill, rememberClassicTill } from '@/lib/offline/till-choice';
+import { BazaarDays } from '@/store/bazaar-days';
+import { KitchenTransferDesk } from '@/lib/bazaar/kitchen-transfer-desk';
+import { kitchenTransferStock } from '@/lib/bazaar/kitchen-transfer-stock';
+import { BakePlan } from '@/store/bake-plan';
+import { CustomerDesk, type CustomerOrder } from '@/store/customer-desk';
+import { EventEntry } from '@/store/event-entry';
+import {
+  holdEventEntryLock,
+  keepInvalidEventEntry,
+  readEventEntry,
+  writeEventEntry
+} from '@/lib/bazaar/event-entry-recovery';
+import { HomeDesk } from '@/store/home-desk';
+import { MakeDesk } from '@/store/make-desk';
+import { MoneyDesk, type MoneyEngine } from '@/store/money-desk';
+import { MoneyEntry } from '@/store/money-entry';
+import { fetchOpenBazaarDay, startedFromRead } from '@/lib/data/helper-day';
+import { ReceiveDelivery, StockChange, type StockEntryItem } from '@/store/stock-entries';
+import { RecipeBook } from '@/store/recipe-book';
+import {
+  dayEventId,
+  setEventDevice,
+  engineStateForDay,
+  fetchBazaar,
+  fetchBazaarDay,
+  fetchEventPrices,
+  startBazaarDay,
+  closeBazaarDay,
+  type DayPrices,
+  type Bazaar,
+  type BazaarClient
+} from '@/lib/data/bazaar-days';
+import { readStallCopy, saveStallCopy } from '@/lib/offline/stall-copy';
+import { requestPersistentStorage } from '@/lib/offline/persist';
+import { isEventUuid, type EventSalesClient } from '@/lib/data/event-sales';
+import { deviceId } from '@/lib/device';
+import { plural } from '@/store/engine/ops-engine';
+import { singularCookies } from '@/lib/display/singular-cookies';
+import type {
+  LiveFlavourFormFields,
+  LiveOrderExtrasFields,
+  LiveOrderRulesFields,
+  LiveScheduledRow,
+  LiveStockItemEdit,
+  LiveStockPriceRow,
+  LiveStockSupplierEdit,
+  LiveRecipeDraftEdit,
+  LivePayFormFields,
+  LiveShopTexts,
+  OpsVals
+} from '@/view-models/vals';
+import { PaymentSync } from '@/lib/data/payment-sync';
+import {
+  EXTRAS_KEY,
+  StaffOrderSync,
+  type StaffOrder,
+  type StaffOrderClient,
+  type StaffOutcome
+} from '@/lib/data/staff-orders';
+import { messagesFor, statusLink } from '@/lib/orders/messages';
+import { extraDetails, extraRows } from '@/lib/orders/extras-view';
+import { type ShopOverride, type ShopStatusClient } from '@/lib/data/shop-status';
+import {
+  fetchOrderRules,
+  orderRulesError,
+  saveOrderRules,
+  type OrderRulesRow
+} from '@/lib/data/order-rules';
+import {
+  LINE_SEP,
+  addOnId,
+  fetchOrderExtras,
+  orderExtrasError,
+  saveOrderExtras,
+  saveOrderExtrasWithImages,
+  type ChoiceImageMap,
+  type OrderExtras,
+  type OrderExtrasFields
+} from '@/lib/data/order-extras';
+import {
+  dateRange,
+  fetchScheduledEvents,
+  linkScheduledEvent,
+  saveScheduledEvent,
+  scheduledEventError,
+  type ScheduledClient,
+  type ScheduledEvent
+} from '@/lib/data/scheduled-events';
+import {
+  EXTRAS_COPY,
+  MESSAGE_SHEET,
+  RULES_COPY,
+  SCHEDULED_COPY,
+  RECIPE_COPY,
+  STAFF_COPY,
+  PRODUCTION_COPY,
+  BOOKS_COPY,
+  COST_COPY,
+  STOCK_COPY
+} from '@/lib/orders/staff-copy';
+import {
+  fetchItemMovements,
+  type ItemMovement,
+  type MovementsClient
+} from '@/lib/data/item-movements';
+import {
+  changeText,
+  formatPesos,
+  formatPesosShort,
+  formatQuantity,
+  lastCountedText,
+  lastPaidText,
+  levelText,
+  lineCost,
+  ratePerUnitText,
+  stockStatus,
+  stockConfidence,
+  sumKnown,
+  totalText,
+  unitCostText
+} from '@/lib/stock/stock-status';
+import type {
+  GroceryRowView,
+  LiveStockVals,
+  StockItemView,
+  StockMovementView
+} from '@/lib/stock/live-stock-types';
+import {
+  fetchItemCosts,
+  fetchRecipeCosts,
+  type CostsClient,
+  type ItemCosts,
+  type RecipeCost
+} from '@/lib/data/costs';
+import {
+  engineRecipes,
+  fetchRecipes,
+  recipeError,
+  saveRecipe,
+  type Recipe,
+  type RecipeLine,
+  type RecipeClient
+} from '@/lib/data/recipes';
+import { fetchRecipeDrafts, saveRecipeDraft, type RecipeDraft } from '@/lib/data/recipe-drafts';
+import {
+  engineBestBuy,
+  engineInventory,
+  engineSuppliers,
+  fetchStockCatalogue,
+  itemError,
+  priceError,
+  saveStockItem,
+  saveSupplier,
+  saveSupplierPrice,
+  supplierError,
+  type ItemFields,
+  type PriceFields,
+  type StockCatalogue,
+  type StockClient,
+  type StockItem
+} from '@/lib/data/stock-catalogue';
+import {
+  currentSuppliers,
+  firstSupplierName,
+  fillDemoCatalogue,
+  fillLiveCatalogue
+} from '@/lib/data/engine-catalogue';
+import type { SaveOutcome } from '@/lib/data/payments';
+import {
+  enginePaid,
+  fetchLastPaid,
+  movementError,
+  recordStockMovement,
+  type LedgerClient,
+  type MovementFields
+} from '@/lib/data/stock-ledger';
+import {
+  engineProduction,
+  fetchProduction,
+  productionError,
+  discardError,
+  recordDiscard,
+  recordPack,
+  recordProduction,
+  type DiscardFields,
+  type ProductionClient,
+  type Production,
+  type ProductionFields,
+  type ProductionResult
+} from '@/lib/data/production';
+import type {
+  LiveBatchCounts,
+  LiveProductionStart,
+  LiveProductionRecipeUpdate
+} from '@/lib/production/live-production-types';
+import { ProductionDrafts, type ProductionProjection } from '@/lib/production/drafts';
+import {
+  parseProductionScope,
+  sameProductionRequest,
+  type ProductionRecovery,
+  type ProductionRecoveryEntry,
+  type ProductionRecoveryScope
+} from '@/lib/production/recovery';
+import { ProductionRecoverySession } from '@/lib/production/recovery-session';
+import { validProductionChoice, MAX_PRODUCTION_QUANTITY } from '@/lib/production/plan';
+import { productionPlanner } from '@/lib/production/planner';
+import { productionHandoff } from '@/lib/production/handoff';
+import { doughFacts, doughStock, sameDoughSubmission } from '@/lib/production/dough';
+import type { ProductionRecipeSnapshot } from '@/lib/production/workspace';
+import {
+  booksCsv,
+  correctionError,
+  drawError,
+  engineLedger,
+  expenseError,
+  fetchBooks,
+  recordCostCorrection,
+  recordDraw,
+  recordExpense,
+  saveCostBasis,
+  unpaidOrders,
+  type Books,
+  type BooksClient,
+  type CorrectionFields,
+  type DrawFields,
+  type ExpenseFields
+} from '@/lib/data/books';
+import { OrderFlow } from '@/lib/data/order-flow';
+import { tokenFromHash, type FieldErrors, type OrderClient } from '@/lib/data/orders';
+import { pickupLabel, statusCust } from '@/lib/orders/status-view';
+import { savedPickupText } from '@/lib/orders/saved-pickup';
+import { ORDER_COPY } from '@/lib/orders/copy';
+import {
+  manilaMinutes,
+  manilaToday,
+  pickupDates,
+  pickupTimes,
+  waitlistRange
+} from '@/lib/orders/pickup';
+import { manilaHour, manilaMidnight, monthStart } from '@/lib/time/business-clock';
+import {
+  EMPTY_IDENTITY,
+  fetchShopIdentity,
+  identityFieldError,
+  saveShopIdentity,
+  type IdentityClient,
+  type IdentityFields,
+  type ShopIdentity
+} from '@/lib/data/shop-identity';
+import { ownerOr, setIdentityWords, withContact } from '@/lib/orders/identity';
+import {
+  ROLE_WORD,
+  cleanStaffName,
+  readStaffName,
+  rememberStaffName,
+  clearStaffName,
+  parseStaffIdentity,
+  type StaffIdentity
+} from '@/lib/auth/staff-name';
+import { EMPTY_TEXTS, type PaymentClient, type UploadClient } from '@/lib/data/payments';
+import { resolveImagePath } from '@/lib/media/resolve-image';
+import { isLiveMode } from '@/lib/config/app-mode';
+import { clearStoredBooks, liveBaseState } from '@/lib/data/live-state';
+import { STATE_LEVEL_KEYS, type SettingsClient } from '@/lib/data/settings';
+import { SettingsSync } from '@/lib/data/settings-sync';
+import { centavosFromDb, centavosToPesos, pesosToCentavos } from '@/lib/money';
+import { peso } from '@/lib/money/format';
+import {
+  FLAVOUR_TOASTS,
+  FlavourSync,
+  catalogueStatePatch,
+  engineCatalogue,
+  flavourFieldError,
+  flavourStatePatch,
+  priceCents,
+  shopCatalogue,
+  slugifyFlavourId,
+  type FlavourEdit,
+  type FlavourFields,
+  type FlavoursClient,
+  type ShopClient
+} from '@/lib/data/flavours';
+import { flavoursRead } from '@/lib/data/flavours-read-state';
+import { ordersRead } from '@/lib/orders/orders-read-state';
+import { CUSTOMER_SCREENS, isScreenKey, type ScreenKey } from '@/lib/screens';
+import type { KeptRecipeEditView } from '@/lib/recipes/live-recipes-types';
+import { parseRecipeRoute, recipeRouteFor, type RecipeRoute } from '@/lib/recipes/navigation';
+import { SettledCounter } from '@/store/settled-counter';
+import { liveScreenFor } from '@/components/live/live-screens';
+import { PLACES, TABS, placeOfRoute, placesOf, tabOf, type Place } from '@/lib/nav/function-map';
+import type {
+  LiveHomeNext,
+  LiveHome,
+  LiveHomeTill,
+  LiveTabs,
+  LiveTillVals
+} from '@/view-models/vals';
+import { helperMoneyView } from '@/lib/auth/helper-money';
+import { saleProblemWords } from '@/lib/offline/sale-problem';
+import { buildTillLedger } from '@/lib/bazaar/till-ledger';
+import {
+  IDLE_MINUTES_MAX,
+  IDLE_MINUTES_MIN,
+  IDLE_SETTING_KEYS,
+  idleMinutesFor
+} from '@/lib/auth/idle-signout';
+import {
+  OFFLINE_OPEN_HOURS_MAX,
+  OFFLINE_OPEN_HOURS_MIN,
+  OFFLINE_OPEN_SETTING_KEY,
+  offlineOpenHoursFor,
+  readRememberedCheck
+} from '@/lib/auth/offline-trust';
+
+/**
+ * The engine, with the one simulated behaviour replaced by the real one.
+ *
+ * The prototype faked bazaar sync with a timeout — deliberately, so the owner could see
+ * what a partial sync looks like. Here it is the actual IndexedDB queue talking to
+ * the record_event_sale / void_event_sale RPCs. The user-facing copy is unchanged: the same sentences fire on the same
+ * outcomes, because those sentences were signed off.
+ *
+ * Everything else is inherited from the port untouched. Overriding here rather than
+ * editing the port keeps the port diffable against the prototype.
+ */
+const HARNESS = process.env.NEXT_PUBLIC_HARNESS !== '0';
+
+export type Device = 'mobile' | 'tablet' | 'desktop';
+
+/**
+ * The live app picks the prototype's own layout for the screen it is on: the phone design
+ * (375–430 px) below 768 px, the tablet design (834 px, side rail) below 1200 px, and the
+ * desktop design (1280 px, rail plus split columns) above. Width only — never the user agent.
+ */
+export function deviceForWidth(width: number): Device {
+  if (width < 768) return 'mobile';
+  if (width < 1200) return 'tablet';
+  return 'desktop';
+}
+
+/**
+ * DP-15's owner-editable idle minutes (MP-09 b2): three extra rows for the ported rules
+ * sheet, which maps over `v.rules`, so no protected markup changes. Live owner only; the
+ * locked-UI exception is recorded in the project notes.
+ */
+/** `state.sheet` while the flavour editor (MP-09 c1c) is open; every other key is untyped. */
+type FlavourSheetState = {
+  kind?: string;
+  pid?: string;
+  isNew?: boolean;
+  updatedAt?: string | null;
+  fromProduct?: boolean;
+};
+
+/** The ported people, kept so a demo runtime built after a live one shows them again. */
+const PORTED_ROLES = (Object.keys(ROLE_WORD) as Role[]).map((role) => ({
+  role,
+  label: ROLES[role].label,
+  who: ROLES[role].who
+}));
+function restorePortedRoles(): void {
+  for (const ported of PORTED_ROLES) {
+    ROLES[ported.role].label = ported.label;
+    ROLES[ported.role].who = ported.who;
+  }
+}
+
+type StaffClient = Pick<SupabaseClient<Database>, 'from' | 'auth'>;
+
+/**
+ * The engine reads `PRODUCTS[0]` on every render (Home's picture, a best-seller pick), so it
+ * cannot draw a shop that has no flavour yet. In live mode an empty list answers that one read
+ * with this blank entry, through the array's prototype: its length stays 0, so every list,
+ * count and loop over the menu is still empty. A list with flavours in it is not affected.
+ */
+const NO_FLAVOUR = Object.freeze({
+  id: '',
+  name: '',
+  short: '',
+  price: 0,
+  img: '',
+  kind: 'Permanent',
+  tag: '',
+  desc: ''
+});
+function letTheMenuBeEmpty(): void {
+  if (Object.getPrototypeOf(PRODUCTS) !== Array.prototype) return;
+  Object.setPrototypeOf(
+    PRODUCTS,
+    Object.create(Array.prototype, {
+      0: {
+        get: () => NO_FLAVOUR,
+        // Writing the first flavour makes it the list's own entry, as on any array.
+        set(this: unknown[], value: unknown) {
+          Object.defineProperty(this, 0, {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true
+          });
+        }
+      }
+    })
+  );
+}
+
+/** Engine actions the live runtime replaces or calls: instance fields of the ported class. */
+type PortedActions = {
+  priceOf: (pid: string, priced?: Record<string, number> | null) => number;
+  previewCheckout: () => void;
+  previewStatus: () => void;
+  denyHelper: (what: string) => void;
+  custRequestCancel: () => void;
+  custTotal: () => number;
+  flatBox: () => number;
+  packFee: () => number;
+  cogsMult: () => number;
+  ingCost: (pid: string) => number;
+};
+
+/**
+ * The engine's cost path (instance fields the typings do not list). In live mode, for the owner, they answer from the database's
+ * cost (`get_item_costs`, `get_recipe_costs`): NaN when it is not known, so that a figure no one handled shows up as NaN in a
+ * test, never as a silent 0. `packCostPerCookie` takes a flavour here (the engine's takes none).
+ */
+type CostActions = {
+  costPerUnit: (name: string) => number;
+  ingCost: (pid: string) => number;
+  packCostPerCookie: (pid?: string) => number;
+  unitCost: (pid: string) => number;
+};
+
+/** What the last read of the database's costs came to: not asked yet, no such functions (migration 55), failed, or read. */
+type CostReads = 'unread' | 'missing' | 'failed' | 'ok';
+
+/**
+ * The engine words an amount for the grocery list ("1.25 kg" for 1,250 g); the number back in the item's own unit, or null when the text is
+ * not one it knows (the caller then shows the engine's own text).
+ */
+function engineAmount(text: string, unit: string): number | null {
+  const m = /^(-?[\d,]*\.?\d+) (\S+)$/.exec(text);
+  if (!m) return null;
+  const n = Number((m[1] ?? '').replace(/,/g, ''));
+  if (!Number.isFinite(n)) return null;
+  if (m[2] === unit) return n;
+  return m[2] === 'kg' && unit === 'g' ? Math.round(n * 1000) : null;
+}
+
+/** What each role can open in the live app: fixed by design (final-plan.md, section 6.7). */
+const STAFF_ACCESS: Record<Role, { can: string; extra: string }> = {
+  owner: { can: 'Everything, including P&L, costs and margins', extra: '' },
+  helper: {
+    can: 'Home, the sales log and Bazaar Mode',
+    extra: 'No costs, expenses or profit anywhere in the app'
+  },
+  support: {
+    can: 'System health and notifications',
+    extra: 'No customer or financial browsing'
+  }
+};
+
+/** The engine's ledger window (`periodFrom`): what the P&L screen itself says it covers. */
+/** The owner's events read is given this long before it counts as failed (Try again shows). */
+const SCHEDULED_READ_LIMIT_MS = 15_000;
+const PNL_PERIOD = 'Last 30 days';
+/** ISO weekday (Monday = 1) to the word Settings shows for a pickup day. */
+const PICKUP_DAY = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+/** N11 (final-plan.md, 6.1): shown on a setting until the owner saves it once. */
+const DEFAULT_NOTE = 'Default, not confirmed yet.';
+
+const IDLE_ROWS: Array<{ role: Role; label: string }> = [
+  // The owner's row is worded with her own name once she has set it (`liveRules`).
+  { role: 'owner', label: 'Sign the owner out after' },
+  { role: 'support', label: 'Sign support out after' },
+  { role: 'helper', label: 'Sign helpers out after' }
+];
+
+/** The customer form fields `state.cust` holds in live mode (B2). */
+type CustFields = {
+  name?: string;
+  ig?: string;
+  mobile?: string;
+  pay?: string;
+  ref?: string;
+  pickupDate?: string;
+  pickupTime?: string;
+  box?: Record<string, number>;
+};
+
+/** Which refusal a `state.cust` key clears when the customer edits it. */
+const FIELD_FOR_CUST_KEY: Record<string, keyof FieldErrors> = {
+  name: 'name',
+  ig: 'ig',
+  mobile: 'mobile',
+  pickupDate: 'date',
+  pickupTime: 'time',
+  pay: 'pay'
+};
+
+/** An empty checkout, the shape the ported `custRestart` resets to. */
+const BLANK_CUST = {
+  name: '',
+  mobile: '',
+  email: '',
+  ig: '',
+  window: 'mon',
+  pay: '',
+  ref: '',
+  sender: '',
+  amount: '',
+  proof: 'none',
+  errors: {},
+  orderNo: ''
+};
+
+/** The engine's bazaar actions are instance fields the typings do not list; wrapped below. */
+interface BazaarActions {
+  recordSale: (pay: string, freebie?: boolean) => void;
+  voidSale: (id: string) => void;
+  startEvent: (ev: { name: string; date: string }) => void;
+  setEventPrice: (pid: string, value: unknown) => void;
+  setEventStock: (pid: string, d: number) => void;
+  openSelling: () => void;
+  addEventExpense: (label: string, amount: unknown, cat?: string) => void;
+  closeEvent: () => void;
+  reopenEvent: () => void;
+  resetEvent: () => void;
+}
+
+/** The engine's inventory actions (instance fields the typings do not list), replaced in live mode by A3. */
+interface InvActions {
+  addInv: (
+    cat: string,
+    name: string,
+    qty: unknown,
+    unit: string,
+    level: unknown,
+    supplier: string
+  ) => void;
+  removeInv: (name: string) => void;
+  saveInv: (name: string, qty: unknown) => void;
+  adjustInv: (name: string, qty: unknown, dir: number) => void;
+  logSpoilage: (name: string, qty: unknown, why: string, pid?: string, kind?: string) => void;
+  reconcile: () => void;
+  countInput: (name: string, v: string) => void;
+  startStocktake: () => void;
+  confirmReceive: (
+    e: { preventDefault: () => void; target: unknown },
+    item: { name: string; supplier: string; key: string; add: number }
+  ) => void;
+  addExpense: (
+    cat: string,
+    label: string,
+    amount: unknown,
+    itemName?: string,
+    itemQty?: unknown
+  ) => void;
+  costPerUnit: (name: string) => number;
+}
+
+/** The engine's confirm actions for dough and baking (instance fields the typings do not list), replaced in live mode by C2. */
+interface ProductionActions {
+  goBack: () => void;
+  startDough: (pid: string) => void;
+  setDoughFlavour: (pid: string) => void;
+  setDoughPortion: (kind: string) => void;
+  confirmDough: () => void;
+  confirmBatch: () => void;
+  startBatch: (productId: string) => void;
+  setBatchFlavour: (productId: string) => void;
+  batchStep: (step: number) => void;
+  toBake: (productId: string, state: OpsEngineState) => number;
+}
+
+/** The parts of `state` the production actions read. */
+interface ProductionState {
+  dropNo: number;
+  recipeVer: Record<string, number>;
+  doughPrep: {
+    pid: string;
+    balls: number;
+    liveWorkId?: string;
+    step?: number;
+    actualBallsText?: string;
+    recipeAmount?: 0.5 | 1;
+  } | null;
+  batch: {
+    pid: string;
+    target: number;
+    actual: number;
+    rejects?: number;
+    adj?: Record<string, number>;
+    liveActualText?: string;
+    liveRejectsText?: string;
+    liveWorkId?: string;
+  } | null;
+}
+
+/** The engine's recipe save (an instance field the typings do not list), replaced in live mode by A4. */
+interface RecipeActions {
+  recipeSave: (pid: string) => void;
+}
+
+/** The parts of `state` the recipes screen keeps, as the runtime reads them. */
+interface RecipeState {
+  recipes: Record<
+    string,
+    { yield: number; ing: Array<[string, unknown, string, RecipeLine['kind']?]> }
+  >;
+  recipeDirty?: Record<string, boolean>;
+  recipeBase?: RecipeState['recipes'];
+}
+
+/** `state.sheet` while an A3 stock form is open. */
+type StockSheetState = {
+  kind?: string;
+  id?: string;
+  isNew?: boolean;
+  itemId?: string;
+  itemName?: string;
+  itemDefinition?: string;
+  priceId?: string;
+  addPrice?: boolean;
+  supplierStamp?: string;
+  priceStamps?: Record<string, string>;
+};
+
+/** The engine's own order actions, replaced in live mode by the ones that ask the database (B3). */
+interface OrderActions {
+  confirmPayment: (id: string, force?: boolean) => void;
+  rejectPayment: (id: string) => void;
+  reopenOrder: (id: string) => void;
+  refundOrder: (id: string, ref?: string) => void;
+  noShow: (id: string) => void;
+  recordBalance: (id: string) => void;
+  flagLine: (id: string, pid: string) => void;
+  replaceLine: (id: string, from: string, to: string) => void;
+  clearContact: (id: string) => void;
+  packOrder: (id: string) => void;
+  collectOrder: (id: string) => void;
+  markBaking: (pid: string, s0?: { orders: unknown[] }) => unknown[];
+  demand: (pid: string) => number;
+  demandDay: (pid: string, day: string) => number;
+  inDrop: (s: unknown, o: unknown) => boolean;
+}
+
+/** The engine's total is an instance field the typings do not list; replaced in live mode (B4b). */
+interface TotalActions {
+  boxTotal: (items: Record<string, number>, priced?: Record<string, number>) => number;
+  priceOf: (pid: string, priced?: Record<string, number>) => number;
+}
+
+/** The orders the bake list counts: unpaid ones too, because Cine bakes before she is paid (28 Sep). */
+const BAKED_FOR = ['Payment review', 'Confirmed', 'Preparing'];
+
+interface LiveEvent {
+  id?: string;
+  name?: string;
+  stage?: string;
+  snapshot?: string[];
+  closedAt?: number;
+  /** S2: set when the event is a started bazaar day. */
+  dayId?: string;
+  scheduledId?: string;
+  /** S3: the day's drawer float. The saved copy of the bazaar keeps the event and not the drawer. */
+  floatCents?: number;
+  /** D3: how many price changes the till's prices include (0 or absent: the list the day started with). */
+  priceVersion?: number;
+  /** D3: the lists this till charged before, newest first (pesos), so a past sale still shows the price it was rung at. */
+  priceLists?: Array<Record<string, number>>;
+}
+
+/** Whole, positive counts of the flavours the server knows for this event. */
+function stockOn(counts: unknown, snapshot: string[] | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [pid, n] of Object.entries((counts ?? {}) as Record<string, unknown>)) {
+    const qty = Math.floor(Number(n));
+    if (qty > 0 && (!snapshot || snapshot.includes(pid))) out[pid] = qty;
+  }
+  return out;
+}
+
+/**
+ * The engine numbers a sale `'S' + (sales.length + 1)`, so a void followed by a new sale
+ * reuses an id and the two share it until one is voided (which removes both). Only the newest
+ * sale, first in the list, can collide; it takes the next unused number.
+ */
+function withUniqueNewestId(sales: EventSale[]): EventSale[] | null {
+  const newest = sales[0];
+  if (!newest || !sales.slice(1).some((sale) => sale.id === newest.id)) return null;
+  const highest = sales.reduce((max, sale) => Math.max(max, Number(sale.id.slice(1)) || 0), 0);
+  return [{ ...newest, id: 'S' + (highest + 1) }, ...sales.slice(1)];
+}
+
+const PENDING_LINK = 'hc-pending-link';
+/** S3: the day whose close was sent with no answer back. */
+const CLOSE_IN_DOUBT = 'hc-close-in-doubt';
+
+function readCloseInDoubt(): string | null {
+  try {
+    return localStorage.getItem(CLOSE_IN_DOUBT);
+  } catch {
+    return null;
+  }
+}
+
+interface PendingLink {
+  scheduledId: string;
+  eventId: string;
+  rentCents: number;
+  at: number;
+}
+
+function readPendingLinks(): PendingLink[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PENDING_LINK) ?? '[]') as unknown;
+    if (!Array.isArray(saved)) return [];
+    return saved.filter(
+      (l): l is PendingLink =>
+        !!l &&
+        typeof l.scheduledId === 'string' &&
+        typeof l.eventId === 'string' &&
+        typeof l.rentCents === 'number' &&
+        typeof l.at === 'number' &&
+        Date.now() - l.at < 3 * 86_400_000
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writePendingLinks(links: PendingLink[]): void {
+  try {
+    if (links.length) localStorage.setItem(PENDING_LINK, JSON.stringify(links));
+    else localStorage.removeItem(PENDING_LINK);
+  } catch {
+    /* private mode: the owner is told, and a later start of the same booking links again */
+  }
+}
+
+function clearPendingLink(link: PendingLink): void {
+  writePendingLinks(readPendingLinks().filter((l) => l.scheduledId !== link.scheduledId));
+}
+
+/** All tools › Menu and recipes (UX review, proposal 1): what each of the four entries is for. */
+const MENU_TOOLS = {
+  title: 'Menu and recipes',
+  flavours: ' · add, edit and publish',
+  products: "Each flavour's price and cost, side by side",
+  recipes: 'Measured ingredients, for cost and stock',
+  drafts: 'Your original recipe text, as you wrote it'
+} as const;
+
+type ToolItem = OpsVals['toolGroups'][number]['items'][number];
+/** A receipt, so Sales log no longer shares the peso icon with P&L. */
+/** A cup, for the Café tab (the engine has no dock item for it). */
+const CAFE_ICON =
+  'M5 8h11v6a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4zM16 9.5h1.5a2 2 0 0 1 0 4H16M8 4.5v1.5M11.5 4.5v1.5';
+const SALES_LOG_ICON =
+  'M6.5 4.5h11v15l-2.2-1.5-1.7 1.5-1.6-1.5-1.6 1.5-1.7-1.5-2.2 1.5zM9.5 9h5M9.5 12.5h5';
+
+/** HCB-004 a2: what an owner view is given for her products until they are read. */
+const NO_PRODUCTS: ReadonlyArray<EngineFlavour> = Object.freeze([]);
+
+// Capture the same engine module instance as this class's base. A hot update can replace
+// the namespace export while an existing base renderer still closes over the original lookup.
+const RENDER_PRODUCTS = (
+  engineModule as unknown as {
+    P: Record<string, { short: string } | undefined>;
+  }
+).P;
+
+/** A pack, said once: "1 kg bag (1,000 g)", "500 g pack", "Single piece". */
+function packWords(
+  size: number | null | undefined,
+  label: string | null | undefined,
+  unit: string
+): string {
+  if (!size || size <= 0) return label || 'Pack size not set';
+  if (size === 1) return 'Single piece';
+  const amount = formatQuantity(size, unit);
+  const same =
+    !label ||
+    label.replace(/[\s,]/g, '') === amount.replace(/[\s,]/g, '') ||
+    label === `${size} ${unit}`;
+  return same ? `${amount} pack` : `${label} (${amount})`;
+}
+
+export class OpsRuntime extends OpsProvider {
+  /** The engine's Counter can stick part way when a total returns to its old value mid-tween; see settled-counter.tsx. */
+  Counter = SettledCounter;
+
+  /**
+   * Where bazaar sales go. Null uses the signed-in browser client, or nothing at all in a
+   * build with no backend (sales then stay queued). A test may set it on the instance.
+   */
+  saleClient: EventSalesClient | null = null;
+
+  private salesTarget(): EventSalesClient | null {
+    return this.saleClient ?? defaultSalesClient();
+  }
+
+  private stopViewportTracking?: () => void;
+  private resetNoticeTimer?: ReturnType<typeof setTimeout>;
+  private healthTimer?: ReturnType<typeof setInterval>;
+  /** Async work that finishes after unmount must not toast (its timer would outlive the tree) or start more work. */
+  private unmounted = false;
+  private settingsSync?: SettingsSync;
+  private flavourSync?: FlavourSync;
+  private paymentSync?: PaymentSync;
+  private orderSync?: StaffOrderSync;
+  private orderClient: StaffOrderClient | null = null;
+  /** The signed-in (or anonymous) browser client the shop status is read and switched through. */
+  private shopClient?: ShopStatusClient;
+  private shopClientEpoch = 0;
+  private rulesRow: OrderRulesRow | null = null;
+  private extrasRow: OrderExtras | null = null;
+  private orderExtrasSave: { scope: number; promise: Promise<void> } | null = null;
+  private orderExtrasSheetScope = 0;
+  /** D4: the owner's bookings (null until read), the client they were read with, the booking being started, and the id the blank form row will use. */
+  private scheduledRows: ScheduledEvent[] | null = null;
+  private scheduledClient: ScheduledClient | null = null;
+  private scheduledReadSeq = 0;
+  /** HCB-002e: the actor whose newest settled events read failed (null after a good read), and whether the newest read is still out. */
+  private scheduledReadFailedActor: number | null = null;
+  private scheduledReading = false;
+  private kitchenDesk: KitchenTransferDesk | null = null;
+  private kitchenSelectionEpoch = 0;
+  private closeKitchenTransfer(): void {
+    this.kitchenSelectionEpoch += 1;
+    this.kitchenDesk?.close();
+    this.kitchenDesk = null;
+  }
+
+  /** Capture verified production authority when drawing the day action. */
+  private kitchenTransferAction(bookingId: string, dayId: string): (() => void) | null {
+    const scope = this.productionRecovery.scope,
+      client = this.productionClient;
+    const actor = this.productionActorEpoch,
+      dropNo = this.state.dropNo;
+    const selection = this.bazaarDays.selectionEpoch(),
+      actionEpoch = this.kitchenSelectionEpoch;
+    const fromHeldTill = !!this.state.event && !this.bazaarDirectoryShowing();
+    const heldTillMatches = () => {
+      const held = this.state.event as Record<string, unknown> | null;
+      return held?.dayId === dayId && held?.scheduledId === bookingId;
+    };
+    if (!scope || !client || this.gateNarrow || this.state.role !== 'owner') return null;
+    const current = () =>
+      !this.unmounted &&
+      this.state.role === 'owner' &&
+      !this.gateNarrow &&
+      actor === this.productionActorEpoch &&
+      client === this.productionClient &&
+      scope.userId === this.productionRecovery.scope?.userId &&
+      scope.business === this.productionRecovery.scope?.business &&
+      dropNo === this.state.dropNo &&
+      this.state.screen === 'bazaar' &&
+      this.bazaarDays.selectedBookingId() === bookingId &&
+      this.bazaarDays.selectionEpoch() === selection &&
+      (fromHeldTill
+        ? this.canLeaveTill() && heldTillMatches()
+        : !this.state.event || this.bazaarDirectoryShowing());
+    return () => {
+      if (!current() || actionEpoch !== this.kitchenSelectionEpoch) return;
+      this.closeKitchenTransfer();
+      const openedEpoch = this.kitchenSelectionEpoch;
+      const owned = (): boolean =>
+        current() && this.kitchenDesk === desk && openedEpoch === this.kitchenSelectionEpoch;
+      const desk: KitchenTransferDesk = new KitchenTransferDesk({
+        scope,
+        client,
+        bookingId,
+        dayId,
+        defaultDrop: Number(dropNo),
+        current: owned,
+        online: () => Boolean(this.state.online),
+        now: () => Date.now(),
+        newId: () => crypto.randomUUID(),
+        changed: () => {
+          if (owned()) this.forceUpdate();
+        },
+        close: () => {
+          if (!owned()) return;
+          this.closeKitchenTransfer();
+          void this.bazaarDays.reload();
+          this.forceUpdate();
+        },
+        refreshProduction: async () => {
+          if (!owned()) return false;
+          const read = await this.loadProduction(null);
+          return owned() && read;
+        },
+        updated: (day) => {
+          if (!owned()) return Promise.resolve(false);
+          return new Promise<boolean>((resolve) => {
+            let applied = false;
+            this.setState(
+              (state) => {
+                if (!owned()) return null;
+                const event = state.event as LiveEvent | null;
+                if (event?.dayId !== day.id || event.scheduledId !== bookingId) {
+                  applied = true;
+                  return null;
+                }
+                const patch = kitchenTransferStock(
+                  day,
+                  (state.eventLoaded ?? {}) as Record<string, number>,
+                  (state.eventStock ?? {}) as Record<string, number>
+                );
+                applied = patch !== null;
+                return patch as never;
+              },
+              () => resolve(owned() && applied)
+            );
+          });
+        }
+      });
+      this.kitchenDesk = desk;
+      void desk.open();
+      this.forceUpdate();
+    };
+  }
+
+  private bazaarDays = new BazaarDays({
+    isItem: (productId) =>
+      this.flavourSync?.current().find((row) => row.id === productId)?.item_type === 'item',
+    // After a reload at the stall the bookings may not have been read yet: the review still reads its day.
+    client: () => (this.scheduledClient ?? this.salesTarget()) as unknown as BazaarClient | null,
+    online: () => Boolean(this.state.online),
+    bookings: () => this.scheduledRows ?? [],
+    bookingsRead: () => this.scheduledRows !== null,
+    bookingsFailed: () => this.scheduledReadFailedActor === this.productionActorEpoch,
+    bookingsRefreshing: () => this.scheduledReading,
+    flavours: () =>
+      PRODUCTS.map((p) => ({
+        id: p.id,
+        name: p.short,
+        priceCents: pesosToCentavos(Number((this as unknown as TotalActions).priceOf(p.id)) || 0),
+        photo: p.img,
+        onMenu: (this.state.dropActive as Record<string, boolean> | undefined)?.[p.id] !== false
+      })),
+    catalogueHeld: () => this.catalogueHeld(),
+    holdsEvent: () => !!this.state.event,
+    resumeTill: () => this.resumeBazaarTill(),
+    hasRecipe: (productId) =>
+      this.recipeRows === null ? null : this.recipeRows.some((r) => r.productId === productId),
+    recipeCost: (productId) => this.recipeCosts.get(productId) ?? null,
+    held: () => {
+      const event = this.state.event as LiveEvent | null;
+      if (!event?.dayId || !event.scheduledId) return null;
+      return {
+        dayId: event.dayId,
+        scheduledId: event.scheduledId,
+        unsent: this.unsentForDay(),
+        refused: this.dayQueue?.refused.size ?? 0,
+        stock: (this.state.eventStock ?? {}) as Record<string, number>
+      };
+    },
+    kitchenTransfer: (booking, day) => this.kitchenTransferAction(booking, day),
+    begin: (booking, day) => this.beginBazaarDay(booking, day),
+    dayClosed: (dayId) => {
+      void this.dropClosedDay(dayId);
+      if (this.state.role === 'owner' && !this.gateNarrow && this.productionRecovery.scope)
+        void this.loadProduction(null);
+    },
+    tillFigures: async () => {
+      const event = this.state.event as LiveEvent | null;
+      if (!event?.id) return null;
+      try {
+        // S2: this till now shows sales rung on her other devices, and the server compares counts exactly: it reads the day again first,
+        // so a sale another device voided since is not counted here (a stale count would be refused, 40001, and refused again).
+        await this.refreshHeldDay({ force: true });
+        const { blocking, refused } = await unsentForEvent(event.id);
+        const out = new Set(refused.map((row) => row.clientId));
+        // The engine drops a voided sale from its list, so what is left is the day's sales that are not voided.
+        const sales = (this.state.sales as EventSale[]).filter(
+          (sale) => !out.has(saleClientId(sale))
+        );
+        // A sale the till holds that has not been acknowledged counts as waiting even before it reaches the queue (the copy
+        // into IndexedDB is asynchronous): the close must not go ahead without it.
+        const unacknowledged = sales.filter(
+          (sale) => !(sale as { synced?: boolean }).synced
+        ).length;
+        return {
+          unsent: Math.max(blocking.length, unacknowledged),
+          salesCount: sales.length,
+          cashCents: sales
+            .filter((sale) => sale.pay === 'Cash')
+            .reduce((sum, sale) => sum + pesosToCentavos(sale.total), 0)
+        };
+      } catch {
+        return null;
+      }
+    },
+    closeInDoubt: (dayId) => this.setCloseInDoubt(dayId),
+    lossSaved: (dayId, pid, qty) => this.moveDayStock(dayId, pid, -qty, null),
+    lossVoided: (dayId, pid, qty) => this.moveDayStock(dayId, pid, qty, null),
+    stockAdded: (dayId, pid, qty, loaded) => this.moveDayStock(dayId, pid, qty, loaded),
+    pricesChanged: (eventId, prices) => this.applyDayPrices(eventId, prices, false),
+    dropNo: () => (this.state as unknown as { dropNo: number }).dropNo,
+    finalised: () => {
+      void this.loadBooks(null);
+      void this.loadProduction(null);
+    },
+    now: () => Date.now(),
+    rerender: () => {
+      if (!this.unmounted) this.forceUpdate();
+    },
+    toast: (text, kind) => this.toast(text, kind),
+    today: () => manilaToday(),
+    newId: () => crypto.randomUUID(),
+    openAdd: () => void this.openScheduled(),
+    refreshBookings: () => this.loadScheduledEvents(null),
+    eventActor: () =>
+      !this.unmounted &&
+      !this.gateNarrow &&
+      this.state.role === 'owner' &&
+      this.productionRecovery.scope
+        ? this.productionActorEpoch
+        : null
+  });
+  private homeGreeting = { greeting: 'Hello.', date: '' };
+  /** Home's facts, each from the record that owns it. */
+  private homeDesk = new HomeDesk({
+    orders: () =>
+      this.orderSync?.loaded ? ((this.state.orders ?? []) as Array<{ status?: string }>) : null,
+    stockItems: () => this.stockCatalogue?.items ?? null,
+    month: () =>
+      this.booksRows ? this.monthTotals(this.state as unknown as OpsEngineState) : null,
+    week: () => (this.booksRows ? this.moneyDesk.lastSevenDays() : null),
+    production: () =>
+      this.productionDrafts.list().map((work) => ({
+        id: work.id,
+        name: work.product.name,
+        detail:
+          work.draft.kind === 'batch'
+            ? `Batch ${work.number} · ${work.draft.target} planned`
+            : `Dough ${work.number} · ${work.draft.actualBalls || 'Count not entered'} dough balls`,
+        open: () => {
+          this.go('bake');
+          this.openProductionWork(work.id, work.revision);
+        }
+      })),
+    flavourCount: () =>
+      this.catalogueHeld()
+        ? PRODUCTS.filter(
+            (p) => (this.state.dropActive as Record<string, boolean> | undefined)?.[p.id] !== false
+          ).length
+        : null,
+    greeting: () => this.homeGreeting.greeting,
+    dateText: () => this.homeGreeting.date,
+    openStockItem: (id) => {
+      this.go('inventory');
+      this.openStockItemPage(id);
+    },
+    go: {
+      orders: () => this.go('orders'),
+      payments: () => this.go('reconcile'),
+      production: () => this.go('bake'),
+      stock: () => this.go('inventory'),
+      receive: () => void this.openHomeStockTask('receive'),
+      count: () => void this.openHomeStockTask('count'),
+      products: () => this.go('products'),
+      shopping: () => this.go('grocery'),
+      money: () => this.go('pnl'),
+      bazaar: () => this.go('bazaar')
+    }
+  });
+  /** Planned bake: reads recipes and recorded stock, and records nothing. */
+  private bakePlan = new BakePlan({
+    production: (rows) => this.shoppingProductionAction(rows),
+    scope: () => (this.state.role === 'owner' ? this.productionRecovery.scope : null),
+    // HCB-004: no product to plan with until her own are read; the built-in six are not hers.
+    ready: () => this.catalogueHeld(),
+    products: () =>
+      this.catalogueHeld() ? PRODUCTS.map((row) => ({ id: row.id, name: row.short })) : [],
+    recipe: (productId) => {
+      const recipe = this.recipeRows?.find((row) => row.productId === productId);
+      return recipe ? { savedYield: recipe.yield, lines: recipe.lines } : null;
+    },
+    items: () => {
+      const c = this.stockCatalogue;
+      if (!c) return null;
+      return c.items
+        .filter((item) => item.active)
+        .map((item) => {
+          // A price counts only for this very pack, from a supplier marked as preferred.
+          const price = c.prices.find(
+            (row) =>
+              row.itemName === item.name &&
+              row.preferred &&
+              row.active &&
+              row.packLabel === item.packLabel
+          );
+          return {
+            name: item.name,
+            unit: item.unit,
+            onHand: item.onHand,
+            counted: !!item.lastCounted,
+            packSize: item.packSize && item.packSize > 0 ? item.packSize : null,
+            packLabel: item.packLabel,
+            supplier: c.suppliers.find((row) => row.id === item.supplierId)?.name ?? '',
+            packPesos: price ? centavosToPesos(price.priceCents) : null,
+            compare: () => this.openItemPrices(item.id),
+            count: () => this.startItemCount(item)
+          };
+        });
+    },
+    rerender: () => {
+      if (!this.unmounted) this.forceUpdate();
+    }
+  });
+  /** Customers, from the orders they placed. */
+  private customerDesk = new CustomerDesk({
+    orders: () =>
+      this.orderSync?.loaded ? ((this.state.orders ?? []) as unknown as CustomerOrder[]) : null,
+    openOrder: (id) => {
+      this.setState({ sheet: null }, () =>
+        (this as unknown as { go: (key: string, extra: { orderId: string }) => void }).go('order', {
+          orderId: id
+        })
+      );
+    },
+    dateText: (at) => dayLabel(at),
+    online: () => Boolean(this.state.online),
+    anonymise: async (phone) => {
+      const client = this.booksClient as unknown as {
+        rpc: (
+          name: string,
+          args: { p_phone: string }
+        ) => PromiseLike<{ data: unknown; error: unknown }>;
+      } | null;
+      if (!client || this.state.role !== 'owner') throw new Error('owner only');
+      const { data, error } = await client.rpc('anonymise_customer', { p_phone: phone });
+      if (error || typeof data !== 'number') throw new Error('not removed');
+      return data;
+    },
+    refresh: async () => this.orderSync?.load()
+  });
+  /** Add event: what was typed and the exact request, kept for this owner on this device. */
+  private eventEntry = new EventEntry({
+    lock: (scope) => holdEventEntryLock(scope),
+    read: (scope) => readEventEntry(scope),
+    write: (scope, value, resolvedId) => writeEventEntry(scope, value, { resolvedId }),
+    keepInvalid: (scope) => keepInvalidEventEntry(scope),
+    send: (body) => this.bazaarDays.sendEventEntry(body),
+    listed: (body) => this.bazaarDays.eventListed(body),
+    online: () => Boolean(this.state.online),
+    uuid: () => crypto.randomUUID(),
+    changed: () => {
+      if (!this.unmounted) this.forceUpdate();
+    }
+  });
+  /** The Money page's figures for its selected period. */
+  private moneyDesk = new MoneyDesk({
+    read: () => {
+      const generation = this.productionRecovery.generation,
+        actor = this.productionActorEpoch,
+        client = this.booksClient,
+        seq = this.booksLoadSeq;
+      return {
+        state: this.booksReadState,
+        online: this.state.online,
+        canRetry: !!client,
+        retry: () => {
+          if (
+            !this.unmounted &&
+            this.state.role === 'owner' &&
+            this.state.online &&
+            !this.gateNarrow &&
+            generation === this.productionRecovery.generation &&
+            actor === this.productionActorEpoch &&
+            client === this.booksClient &&
+            seq === this.booksLoadSeq &&
+            client &&
+            this.booksReadState !== 'loading'
+          )
+            void this.loadBooks(null);
+        }
+      };
+    },
+    engine: () => this as unknown as MoneyEngine,
+    state: () => this.state as unknown as OpsEngineState,
+    books: () => this.booksRows ?? null,
+    recordExpense: () => this.moneyEntry.open('expense'),
+    takeMoneyOut: () => this.moneyEntry.open('draw'),
+    exportBooks: (from) => void this.liveExport(from),
+    openBooks: () => void this.openBooks(),
+    openCategories: () => this.sheet('categories'),
+    openTaxRules: () => this.sheet('rules'),
+    rerender: () => {
+      if (!this.unmounted) this.forceUpdate();
+    }
+  });
+  /** Record expense and Take money out: entry, Review, then one save. */
+  private moneyEntry = new MoneyEntry({
+    categories: () => {
+      const s = this.state as unknown as { categories?: string[]; inactiveCats?: string[] };
+      return (s.categories ?? []).filter((name) => !(s.inactiveCats ?? []).includes(name));
+    },
+    today: () => manilaToday(Number(this.state.now)),
+    earliest: () => manilaToday(Number(this.state.now) - 30 * 86_400_000),
+    online: () => Boolean(this.state.online),
+    recordExpense: ({ category, description, pesos, date }) =>
+      this.livePlainExpense(
+        () => this.engineAddExpense?.(category, description, pesos, '', ''),
+        category,
+        description,
+        pesos,
+        date
+      ),
+    recordDraw: ({ note, pesos, date }) =>
+      this.liveDraw(() => this.engineDraw?.(pesos, note), pesos, note, date),
+    rerender: () => {
+      if (!this.unmounted) this.forceUpdate();
+    }
+  });
+  /** The Make pages' section actions and each product's stock line. */
+  private makeDesk = new MakeDesk({
+    startProduction: () => this.startProductionFromMake(),
+    openDrafts: () => void this.openRecipeDrafts(),
+    addProduct: () => this.openNewFlavour(),
+    bakedRead: () => this.productionReadState === 'read',
+    baked: (productId) =>
+      Number((this.state.baked as Record<string, number> | undefined)?.[productId]) || 0,
+    hasRecipe: (productId) =>
+      this.recipeRows === null
+        ? null
+        : !!this.recipeRows.find((row) => row.productId === productId)?.lines?.length,
+    photo: (productId) => PRODUCTS.find((row) => row.id === productId)?.img ?? '',
+    soldByPiece: (productId) =>
+      this.flavourSync?.current().find((row) => row.id === productId)?.item_type === 'item'
+  });
+  private stockEntryDeps = {
+    items: (): StockEntryItem[] =>
+      (this.stockCatalogue?.items ?? [])
+        .filter((item) => item.active)
+        .map((item) => ({
+          name: item.name,
+          unit: item.unit,
+          packSize: item.packSize && item.packSize > 0 ? item.packSize : null,
+          supplier:
+            this.stockCatalogue?.suppliers.find((row) => row.id === item.supplierId)?.name ?? null,
+          onHand: item.onHand
+        })),
+    suppliers: () =>
+      (this.stockCatalogue?.suppliers ?? []).filter((row) => row.active).map((row) => row.name),
+    online: () => this.stockOnline(),
+    toast: (text: string, kind?: 'ok' | 'warn') => this.toast(text, kind),
+    rerender: () => {
+      if (!this.unmounted) this.forceUpdate();
+    }
+  };
+  /** Receive delivery: several items from one supplier, reviewed before saving. */
+  private receiveDelivery = new ReceiveDelivery({
+    ...this.stockEntryDeps,
+    receiveLine: (name, qty, paid, supplier) => this.receiveLine(name, qty, paid, supplier),
+    refresh: async () => {
+      await this.loadStockCatalogue(null);
+      await this.loadBooks(null);
+    }
+  });
+  /** Waste / correction on one item, reviewed before saving. */
+  private stockChange = new StockChange({
+    ...this.stockEntryDeps,
+    recordWaste: (name, qty, note) => this.liveWaste(name, qty, note),
+    recordCorrection: (name, qty, note) =>
+      this.liveAdjustInv(name, Math.abs(qty), qty < 0 ? -1 : 1, note)
+  });
+  /** U7: the recipe book: each flavour's price, cost per cookie (hers or the recipe's), margin and cost receipt. */
+  private recipeBook = new RecipeBook({
+    client: () =>
+      (isLiveMode()
+        ? this.state.role === 'owner' && !this.gateNarrow
+          ? this.recipeClient
+          : null
+        : (this.scheduledClient ?? this.salesTarget())) as unknown as BazaarClient | null,
+    online: () => Boolean(this.state.online),
+    // HCB-004 a2: her recipe book lists her own products; until they are read it lists none (and says so).
+    flavours: () =>
+      this.heldProducts().map((p) => ({
+        id: p.id,
+        name: p.short,
+        priceCents: pesosToCentavos(Number((this as unknown as TotalActions).priceOf(p.id)) || 0),
+        photo: p.img,
+        onMenu: (this.state.dropActive as Record<string, boolean> | undefined)?.[p.id] !== false
+      })),
+    recipeCost: (productId) => this.recipeCosts.get(productId) ?? null,
+    recipeCostsState: () => this.costReads,
+    batchYield: (productId) =>
+      this.recipeRows?.find((r) => r.productId === productId)?.yield ?? null,
+    reloadCosts: () => void this.loadCosts(),
+    openRecipe: (productId) =>
+      (this as unknown as { openRecipe: (pid: string) => void }).openRecipe(productId),
+    toast: (text, kind) => this.toast(text, kind),
+    rerender: () => {
+      if (!this.unmounted) this.forceUpdate();
+    }
+  });
+  /** U2: the day whose "Show sold out (n)" is on. Screen state only: never saved, and any other day starts hidden. */
+  /** The classic (ported) till instead of the consolidated one, on this phone (`till-choice.ts`). Restored on mount. */
+  private tillClassic = false;
+  /** Why each sale that has not sent has not, by client id, in her words (`reflectQueue`). */
+  private saleProblems = new Map<string, string>();
+  /** U2: the live gate has narrowed the app to Bazaar Mode (no signal to the server): nothing may leave the till. */
+  private gateNarrow = false;
+  private bazaarDirectory = false;
+  private scheduledNewId = '';
+  private scheduledVersion = 0;
+  private stockCatalogue: StockCatalogue | null = null;
+  private stockClient: StockClient | null = null;
+  private stockLoadSeq = 0;
+  private stockReadState: 'idle' | 'loading' | 'ready' | 'failed' = 'idle';
+  /** B5-1: each opened item's movements (owner only) as the item page shows them, and the latest read's token per item. */
+  private movementReads = new Map<
+    string,
+    { state: 'loading' | 'ready' | 'unavailable'; rows: ItemMovement[] }
+  >();
+  private movementTokens = new Map<string, number>();
+  private movementToken = 0;
+  /** A movement whose answer never came is kept, so repeating it exactly sends the same id and time: the database answers it, never applies it twice. */
+  private pendingMovements = new Map<string, MovementFields>();
+  /** When each item's count was entered on the open stocktake, so a count is measured at its own moment. */
+  private countedAt: Record<string, number> = {};
+  private countSaving = false;
+  private countedItemIds = new Map<string, string>();
+  private releaseCountLease: (() => void) | null = null;
+  private countLeaseRequest: Promise<boolean> | null = null;
+  private countLeaseEpoch = 0;
+  private countRestoring = false;
+  private countRecoveryReady = false;
+  private countRecoveryProblem: string | null = null;
+  private pendingCountNames = new Map<string, string>();
+  private countRecoveryBusy = false;
+  private recoveringCountId: string | null = null;
+  /** C2: the client production is read and recorded with, the read in flight, and an action whose answer never came (repeating it reuses its id and time). */
+  private productionClient: ProductionClient | null = null;
+  private productionLoadSeq = 0;
+  private productionReadingDrop: number | null = null;
+  private productionReadState: 'loading' | 'read' | 'failed' = 'loading';
+  private lastProductionDrop: number | null = null;
+  private productionEntry: ProductionRecoveryEntry | null = null;
+  private productionEntryGeneration = 0;
+  private pendingProduction = new Map<string, ProductionFields>();
+  private completedProduction = new Map<
+    string,
+    {
+      fields: ProductionFields;
+      result: ProductionResult;
+      name: string;
+      number?: number;
+      stockState: 'unread' | 'loading' | 'read' | 'failed';
+      inventoryReady: boolean;
+      balance: number | null;
+      checkedAt: number | null;
+      reading?: boolean;
+    }
+  >();
+  private productionWorkIds = new WeakMap<object, string>();
+  private productionActorEpoch = 0;
+  /** A save answered while the role had changed: the owner is told, and the counts are read, once the owner is back. */
+  private productionRecordedAway = false;
+  private savingProduction = new Set<string>();
+  private productionLaunching = false;
+  private productionDrafts = new ProductionDrafts(
+    {
+      identify: (value) => {
+        const id = value.liveWorkId ?? this.productionWorkIds.get(value) ?? crypto.randomUUID();
+        this.productionWorkIds.set(value, id);
+        return id;
+      },
+      metadata: (pid, id, state) => this.productionWorkMetadata(pid, id, state),
+      locked: (id) => this.pendingProduction.has(id) || this.savingProduction.has(id),
+      completed: (id) => this.completedProduction.has(id)
+    },
+    () => crypto.randomUUID()
+  );
+  private productionRestoreFocused = false;
+  private productionRestoreId: string | null = null;
+  private productionAwaitingProjection = false;
+  private productionCaptureGeneration = -1;
+  private productionResolutions = new Set<string>();
+  private productionLateSaved: Array<
+    ProductionRecovery['saved'][number] & { scope: ProductionRecoveryScope }
+  > = [];
+  private productionRecovery = new ProductionRecoverySession({
+    capture: (scope) => this.captureProductionRecovery(scope),
+    clear: () => this.clearProductionWorkspace(),
+    restore: (value) => this.restoreProductionWorkspace(value),
+    resolutions: () => [...this.productionResolutions],
+    changed: () => {
+      if (!this.unmounted) this.setState({});
+    }
+  });
+  private pendingDiscards = new Map<string, DiscardFields>();
+  private discardBusy = false;
+  /** E1: the client the books are read and written with, the last read, the read in flight, and entries whose answer never came (repeating one reuses its id and time). */
+  private booksClient: BooksClient | null = null;
+  private booksRows: Books | null = null;
+  private booksLoadSeq = 0;
+  private booksReadState: 'idle' | 'loading' | 'read' | 'failed' = 'idle';
+  private operationsClient: OperationsClient | null = null;
+  private operationsHealth: OperationsHealth | null = null;
+  private operationsPhase: HealthPhase = 'loading';
+  private operationsLoadSeq = 0;
+  private operationsSourceGeneration = 0;
+  private operationsQueue = -1;
+  /** S3.1: the held event's share of the queue, as last read: rows still to send, and the client ids the server refused. */
+  private dayQueue: { blocking: number; refused: Set<string> } | null = null;
+  private pendingExpenses = new Map<string, ExpenseFields>();
+  private pendingDraws = new Map<string, DrawFields>();
+  private pendingCorrections = new Map<string, CorrectionFields>();
+  /** True while one dough mix or batch is being recorded: a second tap on Confirm must not mint a second record. */
+  private productionBusy = false;
+  /** The last picture of the database applied to `dough`, `baked` and `doughAt`: a later read moves them by what changed on the database, so a change made only on the screen (dough or cookies binned, stall stock) is kept. */
+  private lastProduction: Production | null = null;
+  private stockNewId = '';
+  private stockNewPriceId = '';
+  private stockVersion = 0;
+  private recipeRows: Recipe[] | null = null;
+  private recipeReaderState: 'loading' | 'read' | 'failed' = 'loading';
+  private recipeClient: RecipeClient | null = null;
+  /** The stamp of each flavour's saved recipe as its screen last showed it: what an edit is saved against. */
+  private recipeBaseStamp: Record<string, string | null> = {};
+  private recipeLoadSeq = 0;
+  private recipeEditorContext: {
+    key: string;
+    client: RecipeClient | null;
+    generation: number;
+  } | null = null;
+  private recipeScopeKey: string | null = null;
+  /** HCB-038: the verified identity the recipes are bound to, which names where an unsaved edit is kept. */
+  private recipeScope: ProductionRecoveryScope | null = null;
+  /** HCB-038: what the browser holds for that identity once it has been read (never before the recipes are). */
+  private keptRecipeEdits = new Map<string, KeptRecipeEdit>();
+  private keptRecipeLoadedFor: string | null = null;
+  /** HCB-038: kept edits waiting for her answer, and flavours whose kept edit was dropped because a newer version was saved. */
+  private keptRecipeOffers = new Map<string, KeptRecipeEdit>();
+  private keptRecipeNewer = new Set<string>();
+  private recipeAppliedScopeKey: string | null = null;
+  private recipeRestoredEdits = new Set<string>();
+  private readonly recipeEditScopes = new ScopedRecipeEdits<{
+    value: RecipeState['recipes'][string];
+    stamp: string | null;
+  }>();
+  private recipeSaving = new Set<string>();
+  /** B3b-2: the database's cost of each item and recipe (owner only), what the last read came to, and the read in flight. */
+  private costReads: CostReads = 'unread';
+  private itemCosts: ItemCosts | null = null;
+  private recipeCosts: ReadonlyMap<string, RecipeCost> = new Map();
+  private costLoadSeq = 0;
+  /** The engine's own cost path, kept when the overrides were installed: a database before B3b still costs with it. */
+  private engineCost: CostActions | null = null;
+  /** While set, the item names the engine's packaging cost asks for are written here (see `completeRecipeCost`). */
+  private capturePackNames: string[] | null = null;
+  private recipeDraftRows: RecipeDraft[] | null = null;
+  /** HCB-013: the recipe an address asked for, until her catalogue is held and the flavour can be opened (or found unknown). */
+  private recipePending: { id: string; edit: boolean } | null = null;
+  /** HCB-013: the flavour whose editor an address asked to reopen, until the editor reports that it is open. */
+  private recipeRestoreEdit: string | null = null;
+  private recipeDraftLoading = false;
+  private recipeDraftBusy = false;
+  private recipeDraftError: string | null = null;
+  private recipeDraftEditing: LiveRecipeDraftEdit | null = null;
+  private recipeDraftSession = 0;
+  private recipeDraftLoadSeq = 0;
+  private localEventExpense: ((label: string, amount: unknown, cat?: string) => void) | null = null;
+  private orderFlow?: OrderFlow;
+  private customerViewEpoch = 0;
+  private customerOrders = new CustomerOrderSources<CustFields>({
+    snapshot: () => (this.state.cust ?? {}) as CustFields,
+    empty: () => ({ ...BLANK_CUST, box: {} }),
+    apply: (cust, current, applied) => {
+      this.setState(() => (!this.unmounted && current() ? { cust } : null), applied);
+    },
+    make: (client, current, backend) =>
+      new OrderFlow(
+        client,
+        {
+          current: () => !this.unmounted && current(),
+          changed: () => {
+            if (!this.unmounted && current()) this.forceUpdate();
+          },
+          mintId: () => crypto.randomUUID()
+        },
+        backend !== null
+          ? new OrderRecovery(backend, () =>
+              typeof window === 'undefined' ? null : window.sessionStorage
+            )
+          : undefined
+      )
+  });
+  /** The last fragment this runtime wrote or adopted, so a link pasted into the tab is told apart. */
+  private lastHash = '';
+
+  /**
+   * Live mode never shows or stores the demo books (the project notes "Slice audit",
+   * MP-09 a). `state`/`persist`/`resetData` are instance fields on the protected engine
+   * (`persist = flushNow => {...}`), not prototype methods, so `super.persist` does not
+   * exist — they are replaced here, after the base class field initialisers have run.
+   */
+  constructor(props: OpsEngineProps) {
+    super(props);
+    const engineGo = this.go;
+    this.go = (...args: Parameters<typeof engineGo>) => {
+      ++this.customerViewEpoch;
+      if (this.orderFlow?.lookupState === 'busy') this.orderFlow.clearLookup();
+      return engineGo(...args);
+    };
+    // Every toast goes through here, so none (and no timer behind it) starts after unmount.
+    const engineToast = this.toast;
+    this.toast = (message, tone, undo) => {
+      if (!this.unmounted) engineToast(message, tone, undo);
+    };
+    const bazaar = this as unknown as BazaarActions;
+    const { recordSale, voidSale } = bazaar;
+    bazaar.recordSale = (pay, freebie) => {
+      // S3: a close of this day whose answer was lost may have landed, and the database refuses a sale after a close.
+      const doubt = readCloseInDoubt();
+      if (doubt && (this.state.event as LiveEvent | null)?.dayId === doubt) {
+        this.toast(
+          'This day may already be closed. Get signal and tap Close out to check before selling more.',
+          'warn'
+        );
+        return;
+      }
+      this.tillEdits += 1;
+      recordSale(pay, freebie);
+      this.setState((s: { sales: EventSale[] }) => {
+        const sales = withUniqueNewestId(s.sales);
+        return sales ? { sales } : null;
+      });
+    };
+    // A void never deletes the queued sale: it queues a void row, and the server settles
+    // the pair in either order.
+    bazaar.voidSale = (id) => {
+      const sale = this.state.sales.find((x: EventSale) => x.id === id);
+      this.tillEdits += 1;
+      voidSale(id);
+      if (!sale) return;
+      void (async () => {
+        await enqueueVoid(saleClientId(sale));
+        // A read of the day that was in flight did not see this void row: it reads again rather than bring the sale back.
+        this.tillEdits += 1;
+        await this.reflectQueue();
+        if (navigator.onLine) await this.flushSales();
+        else await requestBackgroundSync();
+      })().catch(() => undefined);
+    };
+    if (!isLiveMode()) {
+      restorePortedRoles();
+      fillDemoCatalogue();
+      return;
+    }
+    // MP-09 c2: live mode never shows the ported demo payment accounts, not even before the read.
+    replacePayAccounts([]);
+    // B2: nor the prototype's people. Each role is its own word until the signed-in person's
+    // name is read from their profile (`loadStaffName`), or put back from this phone on a
+    // reopen with no signal (`restoreStaffName`). Sentences start with no owner or shop name.
+    for (const role of Object.keys(ROLE_WORD) as Role[]) this.nameRole(role, '');
+    setIdentityWords(null);
+    letTheMenuBeEmpty();
+    // The engine names three ported flavours in code (a pricing sample, the checkout preview)
+    // and one person in two toasts. With the owner's own menu those ids may not exist.
+    const ported = this as unknown as PortedActions;
+    const { priceOf } = ported;
+    ported.priceOf = (pid, priced) =>
+      PRODUCTS.some((p) => p.id === pid) || priced?.[pid] != null ? priceOf(pid, priced) : 0;
+    ported.previewCheckout = () => {
+      const s = this.state as { cust?: { box?: Record<string, number> }; dropActive?: object };
+      const onMenu = PRODUCTS.filter(
+        (p) => (s.dropActive as Record<string, boolean> | undefined)?.[p.id] !== false
+      ).slice(0, 3);
+      if (ported.custTotal() === 0 && onMenu.length)
+        this.setState({
+          cust: { ...s.cust, box: Object.fromEntries(onMenu.map((p) => [p.id, 2])) }
+        } as never);
+      this.go('checkout');
+    };
+    // The ported preview opens the newest order and throws when there is none.
+    const { previewStatus } = ported;
+    ported.previewStatus = () => {
+      const s = this.state as { cust?: { orderNo?: string }; orders?: unknown[] };
+      if (s.cust?.orderNo || s.orders?.length) previewStatus();
+      else this.go('status');
+    };
+    ported.denyHelper = (what) =>
+      this.toast('Only ' + ownerOr('the owner') + ' can ' + what + '.', 'warn');
+    // The ported request changed the prototype's local order and promised a refund by name.
+    // A live order is on the server and nothing here cancels it, so it says only that.
+    ported.custRequestCancel = () => {
+      this.closeSheet();
+      this.toast(withContact('An order cannot be cancelled from this page.'), 'warn');
+    };
+    this.installOrderOverrides();
+    this.installShopOverrides();
+    // B4b: an order's total is what the server charged: its flavours at the prices it was sold at, plus the
+    // add-ons, box charges and same-day extra it carries (`EXTRAS_KEY`). The ported total also applies the demo
+    // price mode, packaging fee and flat box price, none of which the server uses. This replaces it in live mode.
+    const totals = this as unknown as TotalActions;
+    totals.boxTotal = (items, priced) =>
+      Object.keys(items).reduce((t, k) => t + totals.priceOf(k, priced) * (items[k] ?? 0), 0) +
+      Number(priced?.[EXTRAS_KEY] ?? 0);
+    // B3b-2: the cost of a cookie, an item and a recipe is the database's (`loadCosts`), not the engine's own sum.
+    this.installCostOverrides();
+    // B2: a live checkout places real orders; the engine's local order list plays no part. The
+    // form fields still live in `state.cust`, so the ported setters and reset actions are kept.
+    this.custSubmit = () => {
+      void this.liveSubmit();
+    };
+    const { custRestart, custSet } = this;
+    this.custRestart = () => {
+      if (this.orderFlow?.resetCheckout() === false) return;
+      custRestart();
+    };
+    this.custReorder = () => this.liveReorder();
+    // While an order is sending, unsettled or placed, the form and the box are locked: "Try again"
+    // must send exactly what the customer sees, and a placed order is not edited from this screen.
+    const { custAdd } = this;
+    this.custAdd = (pid, delta) => {
+      if (this.orderFlow?.locked) {
+        this.toast(this.orderFlow.placed ? ORDER_COPY.placedLocked : ORDER_COPY.locked, 'warn');
+        return;
+      }
+      custAdd(pid, delta);
+    };
+    this.custSet = (key, value) => {
+      if (this.orderFlow?.locked) return;
+      const field = FIELD_FOR_CUST_KEY[key];
+      if (field) this.orderFlow?.clearError(field);
+      custSet(key, value);
+    };
+    // S2: a live event is only ever a started bazaar day (`beginBazaarDay`): planned, then started with its own prices and
+    // stock. The old one-tap start, at the menu prices with no plan, is closed to every caller.
+    bazaar.startEvent = () => {
+      this.toast('Start a bazaar day from the Bazaar page: plan the day, then start it.', 'warn');
+    };
+    bazaar.setEventPrice = () => {
+      this.toast('Bazaar prices are the menu prices from the moment the event starts.', 'warn');
+    };
+    // D2. Only flavours on the event's menu can be put on the table, and the stock load, each
+    // expense and the close are queued like sales: kept on the phone, sent when there is signal.
+    const { setEventStock, openSelling, addEventExpense, closeEvent } = bazaar;
+    // The engine's own function writes only the local books (the list and the close-out screen); the queued
+    // override below also sends an expense. The stall rent is booked by the database, so it uses this one.
+    this.localEventExpense = addEventExpense;
+    bazaar.setEventStock = (pid, d) => {
+      const snapshot = (this.state.event as LiveEvent | null)?.snapshot;
+      if (d > 0 && snapshot && !snapshot.includes(pid)) {
+        this.toast(
+          "That flavour is not on this event's menu. The menu is fixed when the event starts.",
+          'warn'
+        );
+        return;
+      }
+      setEventStock(pid, d);
+    };
+    bazaar.openSelling = () => {
+      openSelling();
+      this.afterUpdate(() => {
+        const event = this.state.event as LiveEvent | null;
+        if (!event || event.stage !== 'selling' || !isEventUuid(event.id)) return;
+        const drawer = this.state.drawer as { float?: number } | null;
+        void this.queueCommand('open', event.id, commandKey('open', event.id), {
+          loaded: stockOn(this.state.eventLoaded, event.snapshot),
+          floatCents: pesosToCentavos(Number(drawer?.float) || 0)
+        });
+      });
+    };
+    bazaar.addEventExpense = (label, amount, cat) => {
+      const text = String(label ?? '').trim();
+      const pesos = Number(amount);
+      const event = this.state.event as LiveEvent | null;
+      if (!text || !(pesos > 0) || !Number.isFinite(pesos) || !isEventUuid(event?.id)) {
+        this.toast('Add a label and an amount.', 'warn');
+        return;
+      }
+      const category =
+        String(cat || 'Bazaar rent')
+          .trim()
+          .slice(0, 40) || 'Bazaar rent';
+      addEventExpense(text, amount, cat);
+      const id = 'expense:' + crypto.randomUUID();
+      void this.queueCommand('expense', event.id, id, {
+        clientId: id,
+        eventId: event.id,
+        label: text.slice(0, 80),
+        category,
+        amountCents: pesosToCentavos(pesos),
+        at: Date.now()
+      });
+    };
+    bazaar.closeEvent = () => {
+      // S2: a bazaar day is closed from its day review (S3), never by the old close-out: the database refuses it (55000), so
+      // it would wait in the queue as a failed sync for the whole rehearsal.
+      if ((this.state.event as LiveEvent | null)?.dayId) {
+        this.toast('Close this day from its review on the Bazaar page.', 'warn');
+        return;
+      }
+      const before = this.state;
+      const counted = (before.drawer as { counted?: unknown } | null)?.counted;
+      const pesos = counted === '' || counted == null ? NaN : Number(counted);
+      const snapshot = (before.event as LiveEvent | null)?.snapshot;
+      const returned = stockOn(before.eventStock, snapshot);
+      // The server closes only when it holds the same float and cash, so a close that overtakes
+      // a sale or the stock load is retried instead of being booked as a drawer variance.
+      const floatCents = pesosToCentavos(
+        Number((before.drawer as { float?: unknown } | null)?.float) || 0
+      );
+      const cashCents = (before.sales as EventSale[])
+        .filter((sale) => sale.pay === 'Cash')
+        .reduce((sum, sale) => sum + pesosToCentavos(sale.total), 0);
+      closeEvent();
+      this.afterUpdate(() => {
+        const event = this.state.event as LiveEvent | null;
+        if (!event || event.stage !== 'closed' || !isEventUuid(event.id)) return;
+        void this.queueCommand('close', event.id, commandKey('close', event.id), {
+          eventId: event.id,
+          at: Number(event.closedAt) || Date.now(),
+          countedCents: Number.isFinite(pesos) && pesos >= 0 ? pesosToCentavos(pesos) : null,
+          returned,
+          floatCents,
+          cashCents
+        });
+      });
+    };
+    // S2: "Leave" would put the day's cookies back into the shop's baked stock and forget the day while it is open on the
+    // server. A started day is left by closing it, from its review (S3).
+    const { resetEvent } = bazaar;
+    bazaar.resetEvent = () => {
+      if ((this.state.event as LiveEvent | null)?.dayId) {
+        this.toast('A bazaar day stays open until you close it from its review.', 'warn');
+        return;
+      }
+      resetEvent();
+    };
+    // A closed event stays closed: the server has (or will have) its count and its books.
+    bazaar.reopenEvent = () => {
+      this.toast('A closed event stays closed. Start a new event for anything after this.', 'warn');
+    };
+    this.state = liveBaseState();
+    // A3: no demo suppliers, prices or pack sizes in the engine's constants until the owner's are read.
+    fillLiveCatalogue(null);
+    // A4: none of the prototype's recipes either, until the owner's are read (an empty recipe for each flavour).
+    Object.assign(
+      this.state as unknown as Record<string, unknown>,
+      engineRecipes(
+        [],
+        PRODUCTS.map((p) => p.id)
+      )
+    );
+    // The engine's inventory actions would change only this screen: they go to the database instead.
+    const inv = this as unknown as InvActions;
+    inv.addInv = (cat, name, qty, unit, level, supplier) =>
+      void this.liveAddInv(cat, name, qty, unit, level, supplier);
+    inv.removeInv = (name) => void this.liveRemoveInv(name);
+    // C1: every change of a quantity is a movement on the database; the screen then shows what the database holds.
+    const keep = {
+      confirmReceive: inv.confirmReceive,
+      addExpense: inv.addExpense,
+      logSpoilage: inv.logSpoilage,
+      countInput: inv.countInput,
+      startStocktake: inv.startStocktake
+    };
+    inv.saveInv = (name, qty) => void this.liveSaveInv(name, qty);
+    inv.adjustInv = (name, qty, dir) => void this.liveAdjustInv(name, qty, dir);
+    inv.reconcile = () => void this.liveReconcile();
+    inv.startStocktake = () => {
+      if (!this.countRecoveryReady || !this.releaseCountLease) {
+        this.toast(
+          this.countRecoveryProblem ??
+            'Counting is unavailable in this tab. Close other Happy Cookie tabs and try again.',
+          'warn'
+        );
+        return;
+      }
+      if (
+        this.state.stocktake ||
+        [...this.pendingMovements.values()].some((f) => f.kind === 'count')
+      ) {
+        this.setState({ liveCountPaused: false });
+        return;
+      }
+      this.countedAt = {};
+      this.countedItemIds = new Map(
+        this.stockCatalogue?.items.filter((i) => i.active).map((i) => [i.name, i.id])
+      );
+      keep.startStocktake();
+    };
+    inv.countInput = (name, v) => {
+      if (!this.state.stocktake) return;
+      this.countedAt[name] = Date.now();
+      keep.countInput(name, v);
+    };
+    inv.logSpoilage = (name, qty, why, pid, kind) => {
+      // Dough and baked cookies thrown away are recorded on the database (C2), so the next bake draws on what is really left.
+      if (pid && (kind === 'dough' || kind === 'baked'))
+        return void this.liveDiscard(
+          () => keep.logSpoilage(name, qty, why, pid, kind),
+          qty,
+          why,
+          pid,
+          kind
+        );
+      if (pid && kind) {
+        keep.logSpoilage(name, qty, why, pid, kind);
+        return this.unknownDiscardCost();
+      }
+      void this.liveWaste(name, qty, why);
+    };
+    this.engineConfirmReceive = keep.confirmReceive;
+    this.engineAddExpense = keep.addExpense;
+    inv.confirmReceive = (e, item) => {
+      const target = e.target as { rqty?: { value: string }; rpaid?: { value: string } };
+      const got = Number(target.rqty?.value);
+      const paid = Number(target.rpaid?.value);
+      if (!(got > 0)) return keep.confirmReceive(e, item); // the engine says what is missing
+      e.preventDefault();
+      // The record first: the engine's own bookkeeping (part deliveries, substitutions, the grocery list) runs only once the
+      // database has the delivery, and the screen then shows what the database holds.
+      void (async () => {
+        if (!(await this.liveReceipt(item.name, got, paid, item.supplier))) return;
+        this.withoutUndo(() => keep.confirmReceive(e, item));
+        await this.loadStockCatalogue(null);
+        await this.loadBooks(null);
+      })();
+    };
+    inv.addExpense = (cat, label, amount, itemName, itemQty) => {
+      const item = itemName ? this.stockItem(itemName) : undefined;
+      const qty = Number(itemQty) || 0;
+      // The engine refuses a form with no category or amount; a plain expense (wages, transport, ...) moves money only, and is a book entry.
+      if (!cat || !amount) return keep.addExpense(cat, label, amount, itemName, itemQty);
+      // With a stock item named the form is a delivery: the engine says what is missing (how much came in), and nothing is booked.
+      if (itemName && (!item || qty <= 0))
+        return keep.addExpense(cat, label, amount, itemName, itemQty);
+      if (!item)
+        return void this.livePlainExpense(
+          () => keep.addExpense(cat, label, amount, itemName, itemQty),
+          cat,
+          label,
+          amount
+        );
+      const supplier =
+        this.stockCatalogue?.suppliers.find((x) => x.id === item.supplierId)?.name ?? '';
+      void (async () => {
+        if (!(await this.liveReceipt(item.name, qty, Number(amount) || 0, supplier))) return;
+        this.withoutUndo(() => keep.addExpense(cat, label, amount, itemName, itemQty));
+        await this.loadStockCatalogue(null);
+        await this.loadBooks(null);
+      })();
+    };
+    // A4: the recipes screen saves to the database (a new version per change), never only to this screen.
+    (this as unknown as RecipeActions).recipeSave = (pid) => void this.liveRecipeSave(pid);
+    // C2: mixing dough and baking take their ingredients off on the database, in one step, and the screens read the records back.
+    this.installProductionOverrides();
+    // E1: the P&L, Home profit and the expense list read the database's books; the export writes them.
+    this.installBooksOverrides();
+    // Not the demo books: only the running bazaar (event id, snapshot prices, stall stock,
+    // the day's sales) is kept, so a reload at the stall can carry on selling. The empty
+    // start (no event) is never saved, so it cannot overwrite the event before it is read back.
+    this.persist = () => {
+      saveBazaar(this.state);
+      this.persistCountRecovery();
+    };
+    this.resetData = () => {
+      // The phone's copy of a started day is the only way to keep selling it: it is not cleared while the day is open.
+      if ((this.state.event as LiveEvent | null)?.dayId) {
+        this.toast('A bazaar day is open on this phone. Close it before starting over.', 'warn');
+        return;
+      }
+      clearStoredBooks();
+      clearBazaar();
+      const fresh = liveBaseState() as Record<string, unknown>;
+      Object.keys(this.state).forEach((k) => {
+        if (!(k in fresh)) fresh[k] = undefined;
+      });
+      fresh.device = this.state.device;
+      fresh.role = this.state.role;
+      fresh.screen = 'today';
+      // BASE_STATE() names only the six ported flavours; keep the loaded list's own state.
+      const flavours = this.flavourSync?.current() ?? [];
+      if (flavours.length) Object.assign(fresh, flavourStatePatch(flavours, fresh));
+      // The reset starts again from the prototype's six recipes: the owner's are put back.
+      for (const p of PRODUCTS)
+        this.recipeBaseStamp[p.id] =
+          this.recipeRows?.find((r) => r.productId === p.id)?.updatedAt ?? null;
+      Object.assign(fresh, this.recipesPatch(fresh as unknown as RecipeState, undefined, true));
+      this.setState(fresh);
+      clearTimeout(this.resetNoticeTimer);
+      this.resetNoticeTimer = setTimeout(
+        // Unlike the demo reset, this must not claim "gone": a sale already queued to
+        // sync lives in IndexedDB (invariant 2), not in this cleared state.
+        () => {
+          this.resetNoticeTimer = undefined;
+          this.toast('Back to empty. Local records on this device were cleared.', 'warn');
+        },
+        80
+      );
+      void this.settingsSync?.reload();
+    };
+    this.captureSettingsActions();
+    const { toggleDropProduct, setPrice } = this;
+    this.toggleDropProduct = (pid) => {
+      const before = this.flavourEdit(pid);
+      toggleDropProduct(pid);
+      this.saveFlavourEdit(pid, { onMenu: !before.onMenu }, before);
+    };
+    // MP-09 c1b: the edit-price sheet. The engine's own clamp is repeated because its
+    // setState has not landed yet. Orders already placed keep their own `priced` map (engine)
+    // and `order_items.unit_price_cents` (database), so only new orders see the change.
+    this.setPrice = (pid, value) => {
+      const before = this.flavourEdit(pid);
+      setPrice(pid, value);
+      this.saveFlavourEdit(pid, { price: Math.max(0, Number(value) || 0) }, before);
+    };
+  }
+
+  /** Runs once the state change just asked for has landed. */
+  private afterUpdate(then: () => void): void {
+    this.setState({}, then);
+  }
+
+  /** Keeps a bazaar command on the phone under a stable key, then tries to send the queue. */
+  private async queueCommand(
+    kind: CommandKind,
+    eventId: string,
+    key: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    try {
+      await enqueueCommand({ clientId: key, kind, eventId, payload, at: Date.now() });
+    } catch {
+      this.toast('That could not be saved on this phone. Try again.', 'warn');
+      return;
+    }
+    await this.reflectQueue();
+    try {
+      if (navigator.onLine) await this.flushSales();
+      else await requestBackgroundSync();
+    } catch {
+      this.toast('Saved on this phone. Sync is still pending.', 'warn');
+    }
+  }
+
+  /**
+   * S2: starts a planned bazaar day. Online only: the server opens it as one event with the day's own prices and stock and
+   * names this phone the selling device. The event id comes from the day, so a retry, a cleared tab or a second tap is
+   * answered with the same event. The till then sells exactly as before. Never calls `link_scheduled_event`.
+   */
+  async beginBazaarDay(
+    booking: { id: string; name: string },
+    day: { id: string; day: string }
+  ): Promise<'started' | 'offline' | 'refused'> {
+    const target = this.state.online ? this.salesTarget() : null;
+    if (!target) {
+      this.toast('Start the day while you have signal. Sales can go offline after that.', 'warn');
+      return 'offline';
+    }
+    const outcome = await startBazaarDay(
+      target as unknown as BazaarClient,
+      day.id,
+      deviceId(),
+      await dayEventId(day.id)
+    );
+    if (!outcome.ok) {
+      this.toast(
+        outcome.error === 'refused'
+          ? 'This day cannot be started now. Check the plan and any day still open.'
+          : 'The day could not be started. Try again.',
+        'warn'
+      );
+      return outcome.error === 'refused' ? 'refused' : 'offline';
+    }
+    // S2 (approved 19 November 2026): the day belongs to her account, not to a device. Whichever phone or browser she is signed in
+    // on, opening the day rebuilds the till from the server: every sale and void, and the table stock worked out there, with
+    // what this phone has not sent laid on top. Nothing moves: any device of hers may sell the day at the same time.
+    const client = target as unknown as BazaarClient;
+    const read = await fetchBazaarDay(client, day.id);
+    let held: ReturnType<typeof mergeDay> | null = null;
+    if (read.ok) {
+      if (read.day.eventId !== outcome.started.eventId) {
+        this.toast('The day could not be loaded. Try again.', 'warn');
+        return 'offline';
+      }
+      let layer: { sales: LocalDaySale[]; voids: Set<string> };
+      try {
+        layer = await this.localDayLayer(read.day.eventId);
+      } catch {
+        // An unreadable queue cannot be laid over the server's day: showing the day alone would hide this phone's unsent
+        // sales and overstate the stock. Nothing is opened; the queue still holds and sends everything it has.
+        this.toast('The day could not be loaded. Try again.', 'warn');
+        return 'offline';
+      }
+      held = mergeDay({
+        server: read.day,
+        local: layer.sales,
+        localVoids: layer.voids,
+        toPesos: centavosToPesos
+      });
+    } else if (read.reason === 'unavailable') {
+      // A database older than migration 93 has no read of the day, and refuses a sale from a device that is not the selling
+      // one. Selling moves here as it did before (the device before stays a former device, so what it holds is still accepted),
+      // and the till starts from the planned stock.
+      if (outcome.started.sellingDevice !== deviceId()) {
+        const moved = await setEventDevice(client, outcome.started.eventId, deviceId());
+        if (moved !== 'moved') {
+          this.toast(
+            moved === 'offline'
+              ? 'This day was started on another device. Connect, then open it again to sell here.'
+              : 'This day could not be moved to this device. It may already be closed.',
+            'warn'
+          );
+          return moved === 'offline' ? 'offline' : 'refused';
+        }
+        this.toast(
+          'Selling now on this device. Sales from the other device still send. The till here starts from the planned stock: check the table before selling.'
+        );
+        outcome.started = { ...outcome.started, sellingDevice: deviceId() };
+      }
+    } else {
+      this.toast('The day could not be loaded. Try again.', 'warn');
+      return read.reason === 'refused' ? 'refused' : 'offline';
+    }
+    // A2: this phone now holds the day's sales, so ask the browser not to evict its storage.
+    void requestPersistentStorage();
+    const patch = engineStateForDay(
+      outcome.started,
+      {
+        name: booking.name,
+        date: dateRange(day.day, day.day),
+        dayId: day.id,
+        scheduledId: booking.id
+      },
+      PRODUCTS.map((p) => p.id),
+      centavosToPesos
+    );
+    this.tillEdits += 1;
+    this.setState((s) => ({
+      // The engine's own startEvent sets syncState 'idle' (it means nothing to sync), which its state type does not list.
+      ...(patch as Omit<typeof patch, 'syncState'>),
+      syncState: 'idle' as never,
+      eventPrices: { ...(s.eventPrices as object), ...patch.eventPrices },
+      ...(held ? this.heldDayPatch(held) : {})
+    }));
+    return 'started';
+  }
+
+  /**
+   * S3 (helpers): what a helper's bazaar screen shows while no day is held on this phone. `none`: nothing is open now; `error` and
+   * `unavailable` (a database older than migration 95) are said plainly; `refused`: their access has ended.
+   */
+  private helperDay: { phase: 'idle' | 'loading' | 'none' | 'error' | 'unavailable' | 'refused' } =
+    {
+      phase: 'idle'
+    };
+  private helperCloseOpen = false;
+  private helperJoining = false;
+  private helperCloseAt: number | null = null;
+
+  /**
+   * S3: a helper's phone finds the day that is open now and builds its till from the server's read of it (`get_open_bazaar_day`,
+   * then `get_bazaar_day`), with this phone's unsent sales laid on top exactly as the owner's till does. It never starts or plans a
+   * day: Cine does that. A day this phone holds that is no longer the open one has been closed, and is let go of once nothing of it
+   * is waiting to send. Called when the helper's Bazaar screen opens, every 15 seconds while it is on screen, and on coming back.
+   */
+  async joinOpenBazaarDay(): Promise<void> {
+    if (this.state.role !== 'helper' || !isLiveMode() || this.helperJoining) return;
+    const target = this.state.online ? this.salesTarget() : null;
+    if (!target) return;
+    const client = target as unknown as BazaarClient;
+    this.helperJoining = true;
+    const held = this.state.event as LiveEvent | null;
+    if (!held) this.helperDay = { phase: 'loading' };
+    this.forceUpdate();
+    try {
+      const open = await fetchOpenBazaarDay(client);
+      if (this.unmounted) return;
+      if (!open.ok) {
+        // A phone that already holds its day keeps selling whatever the read says; the screen only changes when there is none.
+        if (!this.state.event)
+          this.helperDay = {
+            phase:
+              open.reason === 'unavailable'
+                ? 'unavailable'
+                : open.reason === 'refused'
+                  ? 'refused'
+                  : 'error'
+          };
+        return;
+      }
+      const heldNow = this.state.event as LiveEvent | null;
+      if (!open.day) {
+        this.helperDay = { phase: 'none' };
+        if (heldNow?.dayId) await this.dropClosedDay(heldNow.dayId);
+        return;
+      }
+      if (heldNow?.dayId === open.day.dayId) {
+        await this.refreshHeldDay({ force: true });
+        return;
+      }
+      // This phone holds another day (closed since), or none: the day that is open now is the one to sell.
+      if (heldNow?.dayId) {
+        await this.dropClosedDay(heldNow.dayId);
+        if ((this.state.event as LiveEvent | null)?.dayId) return;
+      }
+      const read = await fetchBazaarDay(client, open.day.dayId);
+      if (this.unmounted) return;
+      const started = read.ok ? startedFromRead(read.day) : null;
+      if (!read.ok || !started) {
+        this.helperDay = { phase: read.ok || read.reason === 'refused' ? 'none' : 'error' };
+        return;
+      }
+      let layer: { sales: LocalDaySale[]; voids: Set<string> };
+      try {
+        layer = await this.localDayLayer(started.eventId);
+      } catch {
+        // An unreadable queue cannot be laid under the server's day: nothing is opened, and the queue still holds everything.
+        this.helperDay = { phase: 'error' };
+        return;
+      }
+      const merged = mergeDay({
+        server: read.day,
+        local: layer.sales,
+        localVoids: layer.voids,
+        toPesos: centavosToPesos
+      });
+      void requestPersistentStorage();
+      const patch = engineStateForDay(
+        started,
+        {
+          name: open.day.name,
+          date: dateRange(open.day.day, open.day.day),
+          dayId: open.day.dayId,
+          scheduledId: open.day.bookingId
+        },
+        PRODUCTS.map((p) => p.id),
+        centavosToPesos
+      );
+      this.tillEdits += 1;
+      this.helperDay = { phase: 'idle' };
+      this.setState((s) => ({
+        ...(patch as Omit<typeof patch, 'syncState'>),
+        syncState: 'idle' as never,
+        eventPrices: { ...(s.eventPrices as object), ...patch.eventPrices },
+        ...this.heldDayPatch(merged)
+      }));
+    } finally {
+      this.helperJoining = false;
+      if (!this.unmounted) this.forceUpdate();
+    }
+  }
+
+  /**
+   * S3: a helper closes the day they are selling. They count what is left of each flavour; the database decides where it goes (it
+   * carries to the next day, or goes to the shop on the last), and says nothing about money back. Needs signal, and every sale of
+   * this phone sent first: a sale rung after the close would be refused. Returns the sentence to show when it did not close.
+   */
+  async closeDayAsHelper(input: {
+    left: Record<string, number>;
+    countedPesos: number | null;
+  }): Promise<string | null> {
+    const event = this.state.event as LiveEvent | null;
+    if (this.state.role !== 'helper' || !event?.dayId || !isEventUuid(event.id))
+      return 'There is no open day to close.';
+    const target = this.state.online ? this.salesTarget() : null;
+    if (!target)
+      return 'Closing the day needs signal. Keep selling: sales are saved on this phone.';
+    const stock = (this.state.eventStock ?? {}) as Record<string, number>;
+    const lines: Record<
+      string,
+      { left: number; carryNext: number; toShop: number; writtenOff: number }
+    > = {};
+    for (const pid of event.snapshot ?? []) {
+      const left = input.left[pid] ?? 0;
+      if (!Number.isInteger(left) || left < 0)
+        return 'Count each flavour as a whole number, 0 or more.';
+      if (left > (stock[pid] ?? 0))
+        return 'You counted more than the till says is on the table. Check the count.';
+      lines[pid] = { left, carryNext: 0, toShop: 0, writtenOff: left };
+    }
+    let countedCents: number | null = null;
+    if (input.countedPesos !== null) {
+      if (!Number.isFinite(input.countedPesos) || input.countedPesos < 0)
+        return 'The cash counted must be 0 or more.';
+      countedCents = pesosToCentavos(input.countedPesos);
+    }
+    // Everything this phone rang goes first (the queue itself decides, not the count on screen).
+    await this.flushSales();
+    let unsent = 0;
+    try {
+      unsent = (await unsentForEvent(event.id)).blocking.length;
+    } catch {
+      return 'This phone could not check its unsent sales. Try again.';
+    }
+    if (unsent > 0)
+      return `${unsent} ${unsent === 1 ? 'sale is' : 'sales are'} still on this phone. Wait for ${unsent === 1 ? 'it' : 'them'} to send, then close the day.`;
+    this.helperCloseAt ??= Date.now();
+    const outcome = await closeBazaarDay(target as unknown as BazaarClient, {
+      dayId: event.dayId,
+      at: this.helperCloseAt,
+      countedCents,
+      lines,
+      expected: '0'.repeat(64),
+      till: null
+    });
+    if (outcome === 'saved') {
+      this.helperCloseAt = null;
+      this.helperCloseOpen = false;
+      this.setCloseInDoubt(event.dayId);
+      this.toast('Day closed.');
+      await this.dropClosedDay(event.dayId);
+      this.helperDay = { phase: 'none' };
+      this.forceUpdate();
+      return null;
+    }
+    if (outcome === 'offline') {
+      this.setCloseInDoubt(event.dayId);
+      return 'The close may not have reached the server. Check the signal and press Close the day again: it is safe to repeat.';
+    }
+    this.helperCloseAt = null;
+    return 'The day could not be closed. It may already be closed: ask the owner.';
+  }
+
+  private helperBazaarVals() {
+    const event = this.state.event as LiveEvent | null;
+    const stock = (this.state.eventStock ?? {}) as Record<string, number>;
+    return {
+      phase: event ? ('selling' as const) : this.helperDay.phase,
+      online: Boolean(this.state.online),
+      dayName: event?.name ?? '',
+      join: () => void this.joinOpenBazaarDay(),
+      close: this.helperCloseOpen
+        ? {
+            flavours: (event?.snapshot ?? []).map((pid) => ({
+              id: pid,
+              name: PRODUCTS.find((p) => p.id === pid)?.short ?? pid,
+              onTable: stock[pid] ?? 0
+            })),
+            submit: (input: { left: Record<string, number>; countedPesos: number | null }) =>
+              this.closeDayAsHelper(input),
+            cancel: () => {
+              this.helperCloseOpen = false;
+              this.forceUpdate();
+            }
+          }
+        : null
+    };
+  }
+
+  /** S3: kept on the phone so a reload does not forget that a close of the day may have landed. */
+  private setCloseInDoubt(dayId: string | null): void {
+    try {
+      if (dayId) localStorage.setItem(CLOSE_IN_DOUBT, dayId);
+      else localStorage.removeItem(CLOSE_IN_DOUBT);
+    } catch {
+      /* private mode: a sale after the close is refused by the database and stays on the phone, unsent */
+    }
+  }
+
+  /**
+   * S3: what this phone has not sent yet, as the screen shows it (sales, and the queue's own count when it was read).
+   * The close and the drop of a day count the queue itself (`unsentForEvent`).
+   */
+  private unsentForDay(): number {
+    const day = this.dayQueue;
+    if (!day) return Math.max(Number(this.state.unsynced) || 0, this.operationsQueue, 0);
+    // S3.1: only the held event's rows, and a sale the server refused outright no longer holds the day (it stays queued).
+    const onScreen = (this.state.sales as EventSale[]).filter(
+      (sale) => !sale.synced && !day.refused.has(saleClientId(sale))
+    ).length;
+    return Math.max(onScreen, day.blocking, 0);
+  }
+
+  /**
+   * S3: "Close out" on a started day opens the day's review instead of the old close-out. The review is the owner's and
+   * is read from the database, so it needs signal; selling carries on without it.
+   */
+  private openDayReview(): void {
+    const event = this.state.event as LiveEvent | null;
+    if (!event?.dayId || !event.scheduledId) return;
+    // S3: a helper closes the day with a count of what is left, never through the owner's review.
+    if (this.state.role === 'helper') {
+      this.helperCloseOpen = true;
+      this.forceUpdate();
+      return;
+    }
+    if (this.state.role !== 'owner') {
+      this.toast('The owner closes the day from its review.', 'warn');
+      return;
+    }
+    if (!this.state.online) {
+      this.toast(
+        'Closing the day needs signal. Keep selling: sales are saved on this phone.',
+        'warn'
+      );
+      return;
+    }
+    this.bazaarDays.openReview(event.scheduledId, event.dayId, 'till');
+    this.forceUpdate();
+  }
+
+  /**
+   * S3: the database has closed this day. The phone lets go of it, but only once it has nothing left to send for it, and
+   * never through the engine's `resetEvent`: that would put what is left on the table into the shop's baked stock, and
+   * those cookies were carried over, sent to the shop or written off by her count.
+   */
+  private async dropClosedDay(dayId: string, current: () => boolean = () => true): Promise<void> {
+    const actor = this.productionActorEpoch;
+    const valid = () => !this.unmounted && actor === this.productionActorEpoch && current();
+    if (!valid()) return;
+    if ((this.state.event as LiveEvent | null)?.dayId !== dayId) return;
+    if (this.unsentForDay() > 0) return;
+    // The queue itself decides: anything of this day it has not sent (or a queue that cannot be read) keeps the day on the
+    // phone. A sale the server refused outright does not (S3.1): it stays in the queue, listed, and is never deleted.
+    const eventId = (this.state.event as LiveEvent | null)?.id;
+    if (!eventId) return;
+    let unsent: number;
+    try {
+      unsent = (await unsentForEvent(eventId)).blocking.length;
+    } catch {
+      return;
+    }
+    // Checked again after the wait: nothing may have reached the till or the queue meanwhile.
+    if (
+      !valid() ||
+      unsent > 0 ||
+      this.unsentForDay() > 0 ||
+      (this.state.event as LiveEvent | null)?.dayId !== dayId
+    )
+      return;
+    let cleared = false;
+    this.setState(
+      (state) => {
+        if (!valid() || (state.event as LiveEvent | null)?.dayId !== dayId) return null;
+        cleared = true;
+        return {
+          event: null,
+          sales: [],
+          cart: {},
+          unsynced: 0,
+          syncState: 'idle',
+          syncTried: false,
+          drawer: null,
+          cartDiscount: 0,
+          saleRef: '',
+          tendered: '',
+          eventStock: {},
+          eventLoaded: {}
+        } as never;
+      },
+      // After the state has landed, so a save in between cannot put the day back; the pause ends with the day.
+      () => {
+        if (!cleared || !valid() || this.state.event) return;
+        clearBazaar();
+        this.setCloseInDoubt(null);
+        // A form left open over the till must not come back over the next day's.
+        this.bazaarDays.closeTillPanel();
+      }
+    );
+  }
+
+  /** S3: a loss (below zero) or more stock (above) on the day this phone is selling: the table follows. */
+  private moveDayStock(dayId: string, pid: string, by: number, loaded: number | null): void {
+    this.tillEdits += 1;
+    this.setState((s) => {
+      if ((s.event as LiveEvent | null)?.dayId !== dayId) return null;
+      const stock = (s.eventStock ?? {}) as Record<string, number>;
+      const patch: Record<string, unknown> = {
+        eventStock: { ...stock, [pid]: Math.max(0, (stock[pid] ?? 0) + by) }
+      };
+      if (loaded !== null)
+        patch.eventLoaded = { ...(s.eventLoaded as Record<string, number>), [pid]: loaded };
+      return patch as never;
+    });
+  }
+
+  /**
+   * S3: with signal, the day this phone holds is read from the database. Its float is the day's own (the saved copy on
+   * the phone keeps the event, not the drawer), and a day that was closed from another phone is let go of.
+   */
+  private async confirmHeldDay(current: () => boolean): Promise<void> {
+    const event = this.state.event as LiveEvent | null;
+    const client = this.scheduledClient as unknown as BazaarClient | null;
+    if (!event?.dayId || !event.scheduledId || !client || this.state.role !== 'owner') return;
+    let data: Bazaar;
+    try {
+      data = await fetchBazaar(client, event.scheduledId);
+    } catch {
+      return;
+    }
+    const day = data.days.find((d) => d.id === event.dayId);
+    if (!current() || !day) return;
+    // A closed day pauses selling until the phone has let go of it; an open one settles any doubt.
+    if (day.state === 'closed') {
+      this.setCloseInDoubt(day.id);
+      return void (await this.dropClosedDay(day.id, current));
+    }
+    this.setCloseInDoubt(null);
+    this.setState((s) => {
+      if (!current()) return null;
+      const now = s.event as LiveEvent | null;
+      if (now?.dayId !== day.id) return null;
+      const counted = (s.drawer as { counted?: unknown } | null)?.counted ?? '';
+      return {
+        event: { ...now, floatCents: day.floatCents },
+        drawer: { float: centavosToPesos(day.floatCents), counted }
+      } as never;
+    });
+    void this.refreshHeldPrices();
+    void this.refreshHeldDay({ force: true });
+  }
+
+  /**
+   * S2: what this phone holds for one event that the server may not have acknowledged: the queue's sales, and the sales it
+   * voided (pending and acknowledged voids only). A refused void remains in the queue without hiding the sale or changing stock.
+   */
+  private async localDayLayer(
+    eventId: string
+  ): Promise<{ sales: LocalDaySale[]; voids: Set<string> }> {
+    const sales: LocalDaySale[] = [];
+    const voids = new Set<string>();
+    for (const row of await allSales()) {
+      if (isVoidRow(row)) {
+        if (row.state === 'sent' || !row.refused) voids.add(row.saleClientId);
+        continue;
+      }
+      if (isCommandRow(row) || row.eventId !== eventId) continue;
+      sales.push({
+        clientId: row.clientId,
+        items: row.items,
+        gross: row.gross,
+        discount: row.discount,
+        total: row.total,
+        pay: row.pay,
+        ref: row.ref,
+        clerk: row.clerk,
+        at: row.at,
+        tendered: row.tendered,
+        change: row.change,
+        state: row.state
+      });
+    }
+    return { sales, voids };
+  }
+
+  /** The till's own flavours only, as `engineStateForDay` fills them: a flavour the day does not hold is 0, never absent. */
+  private heldDayPatch(held: ReturnType<typeof mergeDay>): Record<string, unknown> {
+    const by = (m: Record<string, number>) =>
+      Object.fromEntries(PRODUCTS.map((p) => [p.id, m[p.id] ?? 0]));
+    return {
+      sales: held.sales,
+      eventStock: by(held.stock),
+      eventLoaded: by(held.loaded),
+      unsynced: held.unsynced
+    };
+  }
+
+  /**
+   * S2: the day this till sells, read again from the server and rebuilt: sales rung on any of her devices, voids, losses,
+   * added stock and the table stock, with this phone's unsent sales and voids laid on top (`mergeDay`). Read when the till
+   * opens, after a sync, when the phone comes back online or to the front, and when the day is confirmed. A read that
+   * could not be made changes nothing. A confirmed closure pauses selling while the queue is reconciled. If a sale is rung, voided or a
+   * stock move lands while the read is in flight, it is read again rather than put over that change.
+   */
+  private dayReading = false;
+  private dayReadAt = 0;
+  private tillEdits = 0;
+  /** A sale sends the queue, and every send asks for the day again: at most one read in that many milliseconds. */
+  private static readonly DAY_READ_EVERY_MS = 15_000;
+  private async refreshHeldDay(opts: { force?: boolean } = {}): Promise<void> {
+    const event = this.state.event as LiveEvent | null;
+    // S3: a helper's till is rebuilt from the server the same way (get_bazaar_day lets an active helper read the open day).
+    if (
+      !isLiveMode() ||
+      !event?.id ||
+      !event.dayId ||
+      (this.state.role !== 'owner' && this.state.role !== 'helper')
+    )
+      return;
+    if (!this.state.online || this.dayReading) return;
+    if (!opts.force && Date.now() - this.dayReadAt < OpsRuntime.DAY_READ_EVERY_MS) return;
+    this.dayReadAt = Date.now();
+    const client = (this.scheduledClient ?? this.salesTarget()) as unknown as BazaarClient | null;
+    if (!client) return;
+    const { dayId, id } = event;
+    const identity = this.staffIdentity;
+    const role = this.state.role;
+    const current = () => {
+      const held = this.state.event as LiveEvent | null;
+      return (
+        !this.unmounted &&
+        this.staffIdentity === identity &&
+        this.state.role === role &&
+        held?.dayId === dayId &&
+        held.id === id
+      );
+    };
+    this.dayReading = true;
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const edits = this.tillEdits;
+        const read = await fetchBazaarDay(client, dayId);
+        if (!current()) return;
+        let confirmedClosed = read.ok && read.day.eventId === id && read.day.status === 'closed';
+        if (!read.ok && read.reason === 'refused' && role === 'helper') {
+          // A helper loses read access when a day closes. The open-day lookup can confirm closure without widening RLS.
+          const open = await fetchOpenBazaarDay(client);
+          if (!current()) return;
+          if (open.ok && open.day?.dayId !== dayId) {
+            confirmedClosed = true;
+            if (!open.day) this.helperDay = { phase: 'none' };
+          }
+        }
+        if (confirmedClosed) {
+          this.setCloseInDoubt(dayId);
+          await this.dropClosedDay(dayId, current);
+          return;
+        }
+        if (!read.ok || read.day.eventId !== id || read.day.status !== 'open') return;
+        const eventId = read.day.eventId;
+        const layer = await this.localDayLayer(eventId);
+        if (!current()) return;
+        if (edits !== this.tillEdits) continue;
+        await new Promise<void>((resolve) => {
+          // Resolves once the till shows the day (or soon after, should React skip the callback).
+          setTimeout(resolve, 300);
+          this.setState((s) => {
+            const now = s.event as LiveEvent | null;
+            if (!current() || now?.dayId !== read.day.dayId || now.id !== eventId) return null;
+            // A sale on screen that the queue does not hold yet (its copy into IndexedDB is asynchronous) is this phone's too.
+            const known = new Set(layer.sales.map((x) => x.clientId));
+            const onScreen: LocalDaySale[] = (
+              s.sales as Array<EventSale & { clientId?: string }>
+            ).flatMap((sale) =>
+              known.has(saleClientId(sale))
+                ? []
+                : [
+                    {
+                      clientId: saleClientId(sale),
+                      items: sale.items,
+                      gross: sale.gross,
+                      discount: sale.discount,
+                      total: sale.total,
+                      pay: sale.pay,
+                      ref: sale.ref,
+                      clerk: sale.clerk,
+                      at: sale.at,
+                      tendered: sale.tendered,
+                      change: sale.change,
+                      state: sale.synced ? 'sent' : sale.failed ? 'failed' : 'pending',
+                      ledgerId: sale.ledgerId
+                    } as LocalDaySale
+                  ]
+            );
+            return this.heldDayPatch(
+              mergeDay({
+                server: read.day,
+                local: [...layer.sales, ...onScreen],
+                localVoids: layer.voids,
+                toPesos: centavosToPesos
+              })
+            ) as never;
+          }, resolve);
+        });
+        return;
+      }
+    } catch {
+      // The till is left as it was: the queue still holds everything this phone has not sent.
+    } finally {
+      this.dayReading = false;
+      // S4: a change was heard while this read was out, so it may predate it: read again.
+      if (this.dayReadAgain && !this.unmounted) {
+        this.dayReadAgain = false;
+        void this.refreshHeldDay({ force: true });
+      }
+    }
+  }
+
+  /**
+   * S4 (20 November 2026): the held day, live. While a started day is held by a signed-in owner or helper with signal, one
+   * subscription listens to that day's sales, voids, stock adds and losses (`watchDay`) and, after a burst settles, reads the
+   * day again through `refreshHeldDay`: the same server read and queue merge as when the day was opened. A change is never
+   * applied itself and the queue is never touched here. The subscription follows the day: another day, no day, no signal,
+   * no signed-in staff identity, a customer page or an unmount closes it; the database refuses anyone else the rows anyway.
+   */
+  private liveDay: { key: string; watch: LiveDay } | null = null;
+  private dayReadAgain = false;
+  private liveDayHeard = (): void => {
+    if (this.unmounted) return;
+    if (this.dayReading) this.dayReadAgain = true;
+    else void this.refreshHeldDay({ force: true });
+  };
+  private closeLiveDay(): void {
+    this.liveDay?.watch.close();
+    this.liveDay = null;
+  }
+  private syncLiveDay(): void {
+    const event = this.state.event as LiveEvent | null;
+    const role = this.state.role;
+    const client = this.salesTarget();
+    const identity = this.staffIdentity;
+    if (
+      this.unmounted ||
+      !isLiveMode() ||
+      !this.state.online ||
+      !identity ||
+      (role !== 'owner' && role !== 'helper') ||
+      CUSTOMER_SCREENS.includes(this.state.screen as ScreenKey) ||
+      !event?.dayId ||
+      !isEventUuid(event.id) ||
+      !canWatchDay(client)
+    ) {
+      this.closeLiveDay();
+      return;
+    }
+    const key = `${identity.userId}|${role}|${event.dayId}|${event.id}`;
+    if (this.liveDay?.key === key && this.liveDay.watch.active) return;
+    this.closeLiveDay();
+    this.liveDay = {
+      key,
+      watch: watchDay({
+        client,
+        eventId: event.id,
+        dayId: event.dayId,
+        onChange: this.liveDayHeard
+      })
+    };
+  }
+
+  /**
+   * D3: the server's prices for the day this till sells, once a change it has not heard of is newer than what it holds
+   * (another of her devices changed a price, or this phone's answer was lost). Read when the till opens, after a sync and
+   * when the day is confirmed. A read older than what the till holds changes nothing.
+   */
+  private pricesRead = 0;
+  private async refreshHeldPrices(): Promise<void> {
+    const event = this.state.event as LiveEvent | null;
+    // The cheap checks first: no connection is asked for unless there is an open day to re-read (release test, 15 November 2026).
+    if (!isLiveMode() || !event?.id || !event.dayId || this.state.role !== 'owner') return;
+    if (!this.state.online) return;
+    const client = (this.scheduledClient ?? this.salesTarget()) as unknown as BazaarClient | null;
+    if (!client) return;
+    const seq = (this.pricesRead += 1);
+    const read = await fetchEventPrices(client, event.id);
+    if (!read || this.unmounted || seq !== this.pricesRead) return;
+    this.applyDayPrices(event.id, read, true);
+  }
+
+  /**
+   * D3: the till charges these prices from now, on the event they belong to only, and only when they are newer than the
+   * ones it holds. Sales already rung keep their totals; the list they were rung at is kept for their lines.
+   */
+  private applyDayPrices(eventId: string, next: DayPrices, fromRead: boolean): void {
+    let changed = false;
+    this.setState((s) => {
+      const event = s.event as LiveEvent | null;
+      if (!event?.id || event.id !== eventId || next.version <= (event.priceVersion ?? 0))
+        return null;
+      const current = (s.eventPrices ?? {}) as Record<string, number>;
+      const prices: Record<string, number> = { ...current };
+      for (const [id, cents] of Object.entries(next.prices))
+        if (event.snapshot?.includes(id) ?? id in current) prices[id] = centavosToPesos(cents);
+      changed = Object.keys(prices).some((id) => prices[id] !== current[id]);
+      const lists = changed
+        ? [current, ...(event.priceLists ?? [])].slice(0, 20)
+        : event.priceLists;
+      return {
+        eventPrices: prices,
+        event: { ...event, priceVersion: next.version, ...(lists ? { priceLists: lists } : {}) }
+      } as never;
+    });
+    if (fromRead)
+      this.afterUpdate(() => {
+        if (changed)
+          this.toast(
+            'A price of this day was changed on another device. The till charges it from now.'
+          );
+      });
+  }
+
+  /**
+   * Live only. With no staff list loaded (a page that started on the customer shop), there is
+   * nothing to save against: the change goes back rather than showing an edit never sent.
+   */
+  private saveFlavourEdit(pid: string, change: Partial<FlavourEdit>, before: FlavourEdit): void {
+    if (this.flavourSync) {
+      void this.flavourSync.save(pid, change, before);
+      return;
+    }
+    this.restoreFlavour(pid, before);
+    this.toast(FLAVOUR_TOASTS.offline, 'warn');
+  }
+
+  private restoreFlavour(pid: string, edit: FlavourEdit): void {
+    this.setState((s) => ({
+      dropActive: { ...(s.dropActive as Record<string, boolean>), [pid]: edit.onMenu },
+      prices: { ...(s.prices as Record<string, number>), [pid]: edit.price }
+    }));
+  }
+
+  /** A flavour's on-menu switch and price as the engine shows them now. */
+  private flavourEdit(pid: string): FlavourEdit {
+    return {
+      onMenu: (this.state.dropActive as Record<string, boolean>)[pid] !== false,
+      price: this.priceOf(pid)
+    };
+  }
+
+  /**
+   * MP-09 b2: every engine action that writes `cfg` keeps its own optimistic change and
+   * copy, then queues the touched key for `save_setting`. `setRetention` and `setCapacity`
+   * go through `setCfg`/`numCfg`, and the rules/schedule rows call `this.bumpCfg` at tap
+   * time, so they are covered by the first three. `componentDidUpdate`'s prop-driven cfg
+   * writes are the review harness's tweak panel, which live mode never renders.
+   */
+  private captureSettingsActions(): void {
+    const queue = (key: string) => this.settingsSync?.queue(key);
+    const { setCfg, bumpCfg, numCfg, publishPriceMode, extendDrop, closeDrop } = this;
+    this.setCfg = (key, value) => {
+      setCfg(key, value);
+      queue(key);
+    };
+    this.bumpCfg = (key, delta, min, max) => {
+      bumpCfg(key, delta, min, max);
+      queue(key);
+    };
+    this.numCfg = (key, value, min, max) => {
+      numCfg(key, value, min, max);
+      queue(key);
+    };
+    this.publishPriceMode = () => {
+      publishPriceMode();
+      queue('priceMode');
+    };
+    this.extendDrop = () => {
+      extendDrop();
+      queue('extendH');
+    };
+    // Closing a drop resets extendH to 0; unsaved, every later drop would close late.
+    this.closeDrop = () => {
+      closeDrop();
+      queue('extendH');
+    };
+    // MP-09 b3: the expense-category actions write the top-level lists, not cfg. Renaming
+    // also rewrites the ledger's categories, which stays on the device until MP-15.
+    const { addCategory, renameCategory, toggleCategory } = this;
+    this.addCategory = (name) => {
+      addCategory(name);
+      queue('categories');
+    };
+    this.renameCategory = (old, next) => {
+      renameCategory(old, next);
+      queue('categories');
+    };
+    this.toggleCategory = (name) => {
+      toggleCategory(name);
+      queue('inactiveCats');
+    };
+  }
+
+  /**
+   * Called by the live gate once, on the first verified sign-in: the owner reads every
+   * setting, helper and support the staff-safe projection, into `cfg` (and, for the three
+   * lists in `STATE_LEVEL_KEYS`, the top of state). `role` is the
+   * verified profile role, passed in because `setRole` has not landed in `state` yet.
+   */
+  loadSettings(client: SettingsClient, role: Role): Promise<boolean> {
+    if (!isLiveMode()) return Promise.resolve(false);
+    this.settingsSync?.dispose();
+    this.settingsSync = new SettingsSync(client, {
+      role: () => role,
+      read: (key) =>
+        STATE_LEVEL_KEYS.has(key)
+          ? this.state[key]
+          : (this.state.cfg as Record<string, unknown> | undefined)?.[key],
+      apply: (patch) =>
+        this.setState((s) => {
+          const cfg = { ...(s.cfg as Record<string, unknown>) };
+          const top: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(patch)) {
+            if (STATE_LEVEL_KEYS.has(key)) top[key] = value;
+            else cfg[key] = value;
+          }
+          return { ...top, cfg };
+        }),
+      online: () => this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      toast: (message, tone) => this.toast(message, tone)
+    });
+    const base = BASE_STATE();
+    return this.settingsSync.load({
+      ...DEFAULT_CFG,
+      channels: base.channels,
+      categories: base.categories,
+      inactiveCats: base.inactiveCats
+    });
+  }
+
+  /**
+   * MP-09 c1: every role reads the flavour list on the first verified sign-in, and the
+   * engine's PRODUCTS/ALLERGENS are replaced in place with it (the approved engine
+   * exception, the project notes). Prices and the on-menu switch follow
+   * the rows. An empty or failed read keeps the ported list.
+   */
+  /** Her product types and each product's type (migration 84); null until read, or when the database has none yet. */
+  private productTypes: ProductTypes | null = null;
+  private productTypesClient: ProductTypesClient | null = null;
+
+  /** Reads her product types. A failed read keeps the built-in Cookie and Set in the editor, and saves send no type. */
+  async loadProductTypes(client: ProductTypesClient): Promise<void> {
+    this.productTypesClient = client;
+    try {
+      const read = await fetchProductTypes(client);
+      if (client !== this.productTypesClient) return;
+      this.productTypes = read;
+    } catch {
+      if (client !== this.productTypesClient) return;
+      this.productTypes = null;
+    }
+    this.setState((s) => ({
+      productTypesRead: ((s.productTypesRead as number | undefined) ?? 0) + 1
+    }));
+  }
+
+  /** What a behaviour means, in her words. */
+  private static readonly BEHAVIOUR_TEXT: Record<Behaviour, string> = {
+    cookie: 'Counts as a cookie',
+    set: 'A set of cookies',
+    item: 'Sold by the piece, not a cookie'
+  };
+
+  /** The product types panel: her types, renaming, switching off and adding. Null until the types are read. */
+  private productTypesView(): NonNullable<OpsVals['liveForm']>['types'] {
+    const read = this.productTypes;
+    if (!read) return null;
+    return {
+      rows: read.types.map((t) => ({
+        id: t.id,
+        label: t.label,
+        behaviourText: OpsRuntime.BEHAVIOUR_TEXT[t.behavesAs],
+        active: t.active,
+        builtIn: t.builtIn,
+        rename: (label: string) => this.saveType({ ...t, label }, t.updatedAt),
+        toggle: t.builtIn ? null : () => this.saveType({ ...t, active: !t.active }, t.updatedAt)
+      })),
+      add: (label: string, behavesAs: Behaviour) => {
+        const problem = typeLabelError(label, read.types);
+        if (problem) return Promise.resolve(problem);
+        const id = typeIdFor(label, new Set(read.types.map((t) => t.id)));
+        const sortOrder = Math.min(999, Math.max(1, ...read.types.map((t) => t.sortOrder)) + 1);
+        return this.saveType({ id, label, behavesAs, sortOrder, active: true }, null);
+      }
+    };
+  }
+
+  /** One product type save, then the types read again. */
+  private async saveType(
+    type: Pick<ProductType, 'id' | 'label' | 'behavesAs' | 'sortOrder' | 'active'>,
+    expectedUpdatedAt: string | null
+  ): Promise<string | null> {
+    const client = this.productTypesClient;
+    if (!client || !this.state.online) return 'Saving a product type needs signal.';
+    if (expectedUpdatedAt !== null) {
+      const others = (this.productTypes?.types ?? []).filter((t) => t.id !== type.id);
+      const problem = typeLabelError(type.label, others);
+      if (problem) return problem;
+    }
+    const outcome = await saveProductType(client, type, expectedUpdatedAt);
+    await this.loadProductTypes(client);
+    if (outcome === 'saved') {
+      this.toast('Product type saved.');
+      return null;
+    }
+    if (outcome === 'stale') return 'That type changed on another device. It has been read again.';
+    if (outcome === 'locked')
+      return 'Cookie and Set stay on, and a type in use keeps how it behaves.';
+    if (outcome === 'refused') return 'That type could not be saved. Check its name.';
+    return 'Saving a product type needs signal.';
+  }
+
+  /** The editor's type field: the product's type and the types she can choose (switched-on ones, plus its own). */
+  private productTypeChoice(
+    productId: string | null,
+    itemType: string
+  ): {
+    typeId?: string;
+    typeOptions: Array<{ id: string; label: string; behavesAs: Behaviour }>;
+  } {
+    const builtIn = [
+      { id: 'cookie', label: 'Cookie', behavesAs: 'cookie' as const },
+      { id: 'set', label: 'Set', behavesAs: 'set' as const }
+    ];
+    if (!this.productTypes)
+      return { typeOptions: builtIn, typeId: itemType === 'set' ? 'set' : 'cookie' };
+    const own = productId ? this.productTypes.products[productId] : undefined;
+    // An item never falls back to Cookie: without its own type read yet, the first item type is offered.
+    const firstItem = this.productTypes.types.find((t) => t.behavesAs === 'item' && t.active)?.id;
+    const typeId =
+      own ??
+      (itemType === 'item' ? (firstItem ?? 'cookie') : itemType === 'set' ? 'set' : 'cookie');
+    return {
+      typeId,
+      typeOptions: this.productTypes.types
+        .filter((t) => t.active || t.id === typeId)
+        .map((t) => ({ id: t.id, label: t.label, behavesAs: t.behavesAs }))
+    };
+  }
+
+  loadFlavours(client: FlavoursClient): Promise<boolean> {
+    if (!isLiveMode()) return Promise.resolve(false);
+    void this.loadProductTypes(client);
+    this.flavourSync = new FlavourSync(client, {
+      apply: (rows) => {
+        const { list, allergens } = engineCatalogue(rows);
+        replaceFlavours(list, allergens);
+        this.setState((s) => flavourStatePatch(rows, s));
+      },
+      edit: (id) => this.flavourEdit(id),
+      restore: (id, edit) => this.restoreFlavour(id, edit),
+      online: () => this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      toast: (message, tone) => this.toast(message, tone),
+      retried: (loaded) => void settle(loaded)
+    });
+    // B2: a shop whose menu is empty shows no flavour, not the engine's six ported ones. Only
+    // on an answered, empty read: then no record can name a flavour. While the read is out, or
+    // after it fails, the list in hand stays, because batches, baked stock and a running event
+    // name flavours and the engine cannot draw a name it does not hold (system-audit.md, R11).
+    const sync = this.flavourSync;
+    // HCB-003: the page's Try again settles through the same rule as the first read.
+    const settle = (loaded: boolean): boolean => {
+      if (loaded) return true;
+      if (!sync.readEmpty) return false;
+      // Never under a running event: a stall keeps the list it is selling from, whatever a
+      // read says. (A menu cannot be empty while an event names its flavours; this is the belt.)
+      const event = this.state.event as { stage?: string } | null | undefined;
+      if (event && event.stage !== 'closed') return true;
+      replaceFlavours([], {});
+      this.setState((s) => catalogueStatePatch([], {}, s));
+      return true;
+    };
+    return sync.load().then(settle);
+  }
+
+  /**
+   * A2: keeps on the phone what Bazaar Mode needs after a reload with no signal (the flavour
+   * list and five settings, `src/lib/offline/stall-copy.ts`). Called by the live gate after
+   * each passed check, once the settings and flavours are in.
+   */
+  saveStallCopy(): void {
+    if (!isLiveMode()) return;
+    saveStallCopy(this.state.cfg, this.flavourSync?.current() ?? []);
+  }
+
+  /** HCB-004: the engine's list is the copy this phone kept (a flavour list read on an earlier page load). */
+  private catalogueRestored = false;
+
+  /**
+   * Payments' Tick all ticks exactly as the locked engine does, but its toast ("your wallet and your books agree") is
+   * only true of a complete list. On a read that dropped an order, or a refresh that failed after a good read, it
+   * says the list may be incomplete instead.
+   */
+  private liveTickAll(tickAll: OpsVals['recTickAll']): OpsVals['recTickAll'] {
+    return (event) => {
+      tickAll(event);
+      const read = ordersRead.get();
+      const copy =
+        read.dropped > 0
+          ? STAFF_COPY.tickAllDropped
+          : read.phase === 'failed' && read.everRead
+            ? STAFF_COPY.tickAllStale
+            : null;
+      if (copy) this.toast(copy);
+    };
+  }
+
+  /**
+   * HCB-004: whether the engine's flavours are hers: a read has answered, or the copy kept for an offline open was put
+   * back. Otherwise they are the six built-in ones, which a day must not be planned or started from.
+   */
+  private catalogueHeld(): boolean {
+    return !isLiveMode() || this.catalogueRestored || flavoursRead.get().everRead;
+  }
+
+  /**
+   * HCB-004 a2: the products an owner view may name. The engine's list stays as it is (the engine and the write guards
+   * read it), but until her own products are held it is the built-in six, which no owner view may show as hers.
+   */
+  private heldProducts(): ReadonlyArray<EngineFlavour> {
+    return this.catalogueUnread() ? NO_PRODUCTS : PRODUCTS;
+  }
+
+  /**
+   * HCB-004 a2: her catalogue is being read (or the read failed) and nothing of hers is held yet. A runtime no reader was
+   * ever started for (`idle`: the engine on its own, as many tests mount it) has no read to wait for, so it is not "unread".
+   */
+  private catalogueUnread(): boolean {
+    return !this.catalogueHeld() && flavoursRead.get().phase !== 'idle';
+  }
+
+  /** A2: puts that copy back, on a page load the server could not be reached for. */
+  restoreStallCopy(): void {
+    if (!isLiveMode()) return;
+    const copy = readStallCopy();
+    if (!copy) return;
+    if (copy.flavours.length && !this.flavourSync) {
+      this.catalogueRestored = true;
+      const { list, allergens } = engineCatalogue(copy.flavours);
+      const onMenu = Object.fromEntries(copy.flavours.map((f) => [f.id, f.active]));
+      replaceFlavours(list, allergens);
+      this.setState((s) => catalogueStatePatch(list, onMenu, s));
+    }
+    this.setState((s) => ({ cfg: { ...(s.cfg as Record<string, unknown>), ...copy.cfg } }));
+  }
+
+  // ------------------------------------------------------------------ B2: names and the shop's identity
+
+  /** The name each role is shown and recorded under in live mode; '' means the role word. */
+  private staffNames: Partial<Record<Role, string>> = {};
+  private staffNameLoadSeq = 0;
+  private staffIdentity: StaffIdentity | null = null;
+  get staffAccountId(): string | null {
+    return this.staffIdentity?.userId ?? null;
+  }
+
+  getCafeWriteScope(): StaffIdentity | null {
+    return isLiveMode() && !this.unmounted && !this.gateNarrow && this.state.role === 'owner'
+      ? this.staffIdentity
+      : null;
+  }
+
+  /** Name attribution only; the verified gate and database still decide access. */
+  bindStaffIdentity(input: StaffIdentity | null): void {
+    if (!isLiveMode() || this.unmounted) return;
+    const scope = parseStaffIdentity(input);
+    if (
+      scope &&
+      this.staffIdentity?.userId === scope.userId &&
+      this.staffIdentity.business === scope.business
+    )
+      return;
+    this.staffIdentity = scope;
+    if (!scope) this.closeLiveDay();
+    this.clearOrderRead();
+    this.retireOperationsHealth();
+    this.staffNameLoadSeq += 1;
+    this.staffNameRole = null;
+    this.staffRows = null;
+    for (const role of ['owner', 'helper', 'support'] as const) this.nameRole(role, '');
+    if (!scope || !readStaffName(scope)) clearStaffName();
+    this.forceUpdate();
+  }
+  /**
+   * The role a profile read has answered for on this page load, or null. The gate asks again
+   * until it matches the verified role (a failed first try, or a role that changed since).
+   */
+  staffNameRole: Role | null = null;
+  get staffNameRead(): boolean {
+    return this.staffNameRole !== null;
+  }
+  /** The owner's read of every active staff profile (null until read, and for other roles). */
+  private staffRows: Array<{ name: string; role: Role }> | null = null;
+  private identity: ShopIdentity = EMPTY_IDENTITY;
+  /** False until `get_shop_identity()` has answered: a database without it cannot be saved to. */
+  private identityReady = false;
+  private identityClient: IdentityClient | null = null;
+  private identityReadSeq = 0;
+  private identitySourceGeneration = 0;
+
+  /**
+   * Sets what the engine calls a role, in place: the greeting, the account chip, "Rung up by"
+   * and the `clerk` on every bazaar sale all read `ROLES[role].label`. No engine edit: the
+   * object is one of its exports.
+   */
+  private nameRole(role: Role, name: string): void {
+    this.staffNames[role] = name;
+    ROLES[role].label = name || ROLE_WORD[role];
+    ROLES[role].who = name ? name + ' · ' + ROLE_WORD[role].toLowerCase() : ROLE_WORD[role];
+  }
+
+  /**
+   * A2 and B2: on a page load the server could not be reached for, the stall reopens under the
+   * name this phone remembered for the role it reopens as, so its sales still say who rang them
+   * up. Only there: an online load waits for the profile, because the person signing in may
+   * not be the one the phone remembers.
+   */
+  restoreStaffName(role: Role, identity: StaffIdentity): void {
+    if (!isLiveMode() || this.unmounted) return;
+    this.bindStaffIdentity(identity);
+    const scope = this.staffIdentity;
+    if (!scope) return;
+    const remembered = readStaffName(scope);
+    if (remembered?.role !== role) return;
+    this.nameRole(role, remembered.name);
+    this.forceUpdate();
+  }
+
+  /**
+   * Every live page reads the shop's own name, the owner's name, how to reach her and the
+   * tagline (`get_shop_identity()`, anon may execute it). Nothing read, a failed read, or a
+   * database that does not have the function yet all mean the same thing on screen: neutral
+   * wording and no tagline. Never a prototype value, and never an error.
+   */
+  async loadShopIdentity(client: IdentityClient | null): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted) return false;
+    const seq = ++this.identityReadSeq;
+    if (this.identityClient !== client || !client) {
+      this.identitySourceGeneration += 1;
+      this.identityClient = client;
+      this.identityReady = false;
+      this.identity = EMPTY_IDENTITY;
+      setIdentityWords(null);
+      this.forceUpdate();
+    }
+    if (!client) return false;
+    const read = await fetchShopIdentity(client);
+    if (this.unmounted || seq !== this.identityReadSeq || client !== this.identityClient)
+      return false;
+    this.identityReady = read.status === 'ok';
+    this.identity = read.status === 'ok' ? read.identity : EMPTY_IDENTITY;
+    setIdentityWords(read.status === 'ok' ? read.identity : null);
+    this.forceUpdate();
+    return read.status === 'ok';
+  }
+
+  /**
+   * The signed-in person's own name, from their profile (RLS lets everyone read their own row,
+   * and the owner every staff row, which is also the "Who can see what" list). Called by the
+   * gate after a verified check, never awaited by it. The name is cleaned to what a sale may
+   * carry and remembered on the phone for an offline reopen. A failed read changes nothing.
+   */
+  async loadStaffName(client: StaffClient | null, role: Role): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted) return false;
+    const seq = ++this.staffNameLoadSeq;
+    const actor = this.productionActorEpoch;
+    const identity = this.staffIdentity;
+    const current = () =>
+      !this.unmounted &&
+      identity !== null &&
+      identity === this.staffIdentity &&
+      seq === this.staffNameLoadSeq &&
+      actor === this.productionActorEpoch &&
+      role === this.state.role &&
+      readRememberedCheck()?.role === role;
+    if (!client || !current()) return false;
+    try {
+      const { data: auth } = await client.auth.getSession();
+      const uid = auth.session?.user.id;
+      if (!uid || uid !== identity?.userId || !current()) return false;
+      const { data, error } = await client
+        .from('profiles')
+        .select('id, display_name, role, active');
+      // Only the current verified read may name future sales or remember an offline clerk.
+      if (error || !data || !current()) return false;
+      const profile = data.find((row) => row.id === uid);
+      if (!profile?.active || profile.role !== role || !identity) return false;
+      const name = cleanStaffName(profile.display_name);
+      this.staffNameRole = role;
+      this.nameRole(role, name);
+      rememberStaffName(role, name, identity);
+      this.staffRows =
+        role === 'owner'
+          ? data
+              .filter((row) => row.active && Object.hasOwn(ROLE_WORD, row.role))
+              .map((row) => ({ name: cleanStaffName(row.display_name), role: row.role as Role }))
+          : null;
+      this.forceUpdate();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async saveIdentityForm(fields: IdentityFields, current: () => boolean): Promise<void> {
+    if (!current()) return;
+    const client = this.identityClient;
+    if (!client || !this.identityReady) {
+      this.toast('Shop details cannot be saved here yet.', 'warn');
+      return;
+    }
+    const trimmed: IdentityFields = {
+      shopName: fields.shopName.trim(),
+      ownerName: fields.ownerName.trim(),
+      contactLine: fields.contactLine.trim(),
+      tagline: fields.tagline.trim()
+    };
+    const problem = identityFieldError(trimmed);
+    if (problem) {
+      this.toast(problem, 'warn');
+      return;
+    }
+    const seq = this.identityReadSeq;
+    const result = await saveShopIdentity(client, trimmed, this.identity.updatedAt);
+    // Retired acknowledgements cannot reattach a source or supersede a newer read.
+    if (!current() || seq !== this.identityReadSeq) return;
+    if (result.status === 'saved' || result.status === 'conflict') {
+      const refresh = this.loadShopIdentity(client);
+      const refreshSeq = this.identityReadSeq;
+      await refresh;
+      if (!current() || refreshSeq !== this.identityReadSeq) return;
+      if (result.status === 'saved') this.toast('Shop details saved.');
+      else this.toast('These were changed somewhere else. Check them and save again.', 'warn');
+      return;
+    }
+    this.toast(
+      result.status === 'offline' ? STAFF_COPY.offline : 'Those shop details were not accepted.',
+      'warn'
+    );
+  }
+
+  /** The orders being picked up today, on the shop's clock: the alert and Home's count. */
+  private pickupsToday(): StaffOrder[] {
+    const today = manilaToday();
+    return (this.orderSync?.current() ?? []).filter(
+      (o) => o.pickupDate === today && ['Confirmed', 'Preparing', 'Ready'].includes(o.state)
+    );
+  }
+
+  /**
+   * Audit C1: Home says "Profit this month" (ported, locked) over the engine's rolling 30
+   * days. In live mode the figure is the shop's calendar month to date, so the label is true.
+   * The engine's own sum is reused with its period start swapped for the call.
+   */
+  private monthTotals(s: OpsEngineState) {
+    const period = this as unknown as { periodFrom: (s: OpsEngineState) => number };
+    const ported = period.periodFrom;
+    const from = manilaMidnight(monthStart(manilaToday(Number(s.now))));
+    period.periodFrom = () => from;
+    try {
+      return this.pnlTotals(s) as { profit: number; revenue: number; totalExp: number };
+    } finally {
+      period.periodFrom = ported;
+    }
+  }
+
+  /**
+   * The sampler card on the customer shop says which cookies are inside, from the owner's saved list
+   * (`get_shop_extras`, published cookies only). The engine builds the cards in this same filtered order.
+   */
+  /**
+   * The month's profit goal for the rail and Money (approved 16 Nov 2026). The goal is the owner's setting (`profitGoal`,
+   * pesos in the engine's cfg, centavos in the database); until migration 87 is applied the key never arrives and this
+   * stays null, so the rail keeps showing the drop. Saving goes through `setCfg`, which queues `save_setting`.
+   */
+  private profitGoalVals(starved: OpsVals): OpsVals['profitGoal'] {
+    if (!isLiveMode() || this.state.role !== 'owner') return null;
+    const raw = (this.state.cfg as Record<string, unknown> | undefined)?.profitGoal;
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return null;
+    const month = this.liveHomeVals(starved)?.month ?? null;
+    return {
+      goal: raw,
+      profit: month ? month.profit : null,
+      set: (pesos: number) =>
+        this.setCfg('profitGoal', Math.max(0, Math.min(1000000, Math.round(pesos))))
+    };
+  }
+
+  /**
+   * "Order a box!" on the shop: the owner's active box sizes, the cookies in the cart (the sampler is a set, not a
+   * boxed cookie) and the sampler's row. Boxes are an extra at checkout, so this adds no price or server call:
+   * Continue chooses one box of the size in the checkout's own box rows and opens the normal checkout.
+   */
+  private shopBoxVals(): OpsVals['shopBox'] {
+    const x = this.orderFlow?.extras;
+    const engine = this as unknown as {
+      shopOpen: (s: unknown) => boolean;
+      custToCheckout: () => void;
+    };
+    if (!isLiveMode() || !x || x.boxes.length === 0 || !engine.shopOpen(this.state)) return null;
+    const box = (this.state.cust as { box?: Record<string, number> } | undefined)?.box ?? {};
+    const samplerId = x.sampler.productId;
+    const cookies = Object.entries(box)
+      .filter(([id]) => id !== samplerId)
+      .reduce((n, [, qty]) => n + Math.max(0, qty), 0);
+    const dropActive = (this.state.dropActive ?? {}) as Record<string, boolean>;
+    const samplerRow = samplerId
+      ? PRODUCTS.filter((p) => dropActive[p.id] !== false).findIndex((p) => p.id === samplerId)
+      : -1;
+    return {
+      sizes: x.boxes.map((b) => b.size),
+      cookies,
+      samplerRow: samplerRow >= 0 ? samplerRow : null,
+      pick: (size: number) => {
+        const flow = this.orderFlow;
+        if (!flow || cookies !== size || !x.boxes.some((b) => b.size === size)) return;
+        if (flow.locked) return;
+        for (const other of Object.keys(flow.boxQty)) flow.setBox(Number(other), 0);
+        flow.setBox(size, 1);
+        engine.custToCheckout();
+      }
+    };
+  }
+
+  private liveShopSampler(rows: OpsVals['shopFlavours']): OpsVals['shopFlavours'] {
+    const sampler = this.orderFlow?.extras?.sampler;
+    const flavours = sampler?.flavours ?? [];
+    if (!isLiveMode() || !rows || !sampler?.productId || !flavours.length) return rows;
+    const dropActive = (this.state.dropActive ?? {}) as Record<string, boolean>;
+    const shown = PRODUCTS.filter((p) => dropActive[p.id] !== false);
+    if (shown.length !== rows.length) return rows;
+    const names = flavours.flatMap((id) => {
+      const name = PRODUCTS.find((p) => p.id === id)?.short;
+      return name ? [name] : [];
+    });
+    if (!names.length) return rows;
+    return rows.map((row, i) =>
+      shown[i]?.id === sampler.productId
+        ? { ...row, desc: [row.desc, `Includes ${names.join(', ')}.`].filter(Boolean).join(' ') }
+        : row
+    );
+  }
+
+  // ------------------------------------------------------------------ Home: today's real work
+
+  /**
+   * Home's facts, each from the record that owns it: open orders by their saved status, stock by
+   * the catalogue (never counted is unknown, not zero), unfinished production from its own drafts
+   * and this month's books through `monthTotals`. A source that has not loaded is null.
+   */
+  private liveHomeVals(starved: OpsVals): LiveHome | null {
+    if (!isLiveMode() || this.state.role !== 'owner' || this.state.screen !== 'today') return null;
+    const rawNow = Number(this.state.now);
+    const now = Number.isFinite(rawNow) ? rawNow : Date.now();
+    const hour = manilaHour(now);
+    const salutation = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    this.homeGreeting = {
+      greeting: String(starved.greeting ?? 'Hello.').replace(
+        /^Good (morning|afternoon|evening),/,
+        `${salutation},`
+      ),
+      date: dayLabel(now)
+    };
+    return { ...this.homeDesk.vals(), booksReadState: this.booksReadState };
+  }
+
+  /** Home shortcuts enter the existing stock actions; opening a task never posts a movement. */
+  private async openHomeStockTask(kind: 'receive' | 'count'): Promise<void> {
+    if (
+      !isLiveMode() ||
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      this.state.screen !== 'today'
+    )
+      return;
+    this.go('inventory');
+    await new Promise<void>((resolve) =>
+      this.setState(
+        { liveStockOpen: null, liveStockPriceOpen: false, liveStockReturn: null },
+        resolve
+      )
+    );
+    if (!this.stockCatalogue) await this.loadStockCatalogue(null);
+    const current = this.state;
+    if (this.unmounted || current.role !== 'owner' || current.screen !== 'inventory') return;
+    if (!this.stockCatalogue)
+      return void this.toast('Inventory could not be read. Try again when connected.', 'warn');
+    const items = this.stockCatalogue.items.filter(
+      (item) => item.active && ['Ingredients', 'Packaging'].includes(item.category)
+    );
+    const first = items.find((item) => item.category === this.state.invTab) ?? items[0];
+    if (kind === 'count') {
+      const category = first?.category ?? 'Ingredients';
+      this.startCategoryCount(category);
+    } else if (first) {
+      this.receiveDelivery.open(first.name);
+    } else this.toast('Add an inventory item before receiving a delivery.', 'warn');
+  }
+
+  private recipeEditorGeneration(): number {
+    const key = JSON.stringify([
+      this.state.screen,
+      this.state.recipeOpen,
+      this.state.liveRecipeTarget,
+      this.state.dropNo,
+      this.productionActorEpoch
+    ]);
+    if (
+      this.recipeEditorContext?.key !== key ||
+      this.recipeEditorContext.client !== this.recipeClient
+    )
+      this.recipeEditorContext = {
+        key,
+        client: this.recipeClient,
+        generation: (this.recipeEditorContext?.generation ?? 0) + 1
+      };
+    return this.recipeEditorContext.generation;
+  }
+
+  private liveRecipeEditor(vals: OpsVals): OpsVals['recipe'] {
+    const recipe = vals.recipe;
+    if (!isLiveMode() || this.state.role !== 'owner') return recipe;
+    const generation = this.recipeEditorGeneration();
+    const actor = this.productionActorEpoch,
+      client = this.recipeClient,
+      productId = this.state.recipeOpen,
+      screen = this.state.screen;
+    const current = () =>
+      !this.unmounted &&
+      generation === this.recipeEditorContext?.generation &&
+      this.state.role === 'owner' &&
+      actor === this.productionActorEpoch &&
+      client === this.recipeClient &&
+      productId === this.state.recipeOpen &&
+      screen === this.state.screen;
+    const run = (action: () => void) => () => {
+      if (current()) action();
+    };
+    return {
+      ...recipe,
+      save: run(recipe.save),
+      addRow: run(recipe.addRow),
+      yieldUp: run(recipe.yieldUp),
+      yieldDown: run(recipe.yieldDown),
+      rows: this.liveRecipeRows(vals).map((row) => ({
+        ...row,
+        setName: (event) => {
+          if (current()) row.setName(event);
+        },
+        setQty: (event) => {
+          if (current()) row.setQty(event);
+        },
+        setUnit: (event) => {
+          if (current()) row.setUnit(event);
+        },
+        remove: run(row.remove),
+        setKind: row.setKind
+          ? (kind) => {
+              if (current()) row.setKind?.(kind);
+            }
+          : undefined
+      }))
+    };
+  }
+
+  /** The editor's rows also say whether each line is an ingredient or packaging, which a save must keep. */
+  private liveRecipeRows(vals: OpsVals): OpsVals['recipe']['rows'] {
+    const rows = vals.recipe?.rows ?? [];
+    const pid = this.state.recipeOpen as string | undefined;
+    const recipe = pid ? (this.state as unknown as RecipeState).recipes[pid] : undefined;
+    if (!isLiveMode() || this.state.role !== 'owner' || !pid || !recipe) return rows;
+    return rows.map((row, index) => ({
+      ...row,
+      kind: recipe.ing[index]?.[3] as 'ingredient' | 'packaging' | null | undefined,
+      setKind: (kind: 'ingredient' | 'packaging') => {
+        this.setState((s) => {
+          const state = s as unknown as RecipeState & { recipeDirty: Record<string, boolean> };
+          const lines = state.recipes[pid]?.ing;
+          if (!lines?.[index]) return null;
+          const [name, qty, unit] = lines[index];
+          const ing = lines.map((line, at) =>
+            at === index ? ([name, qty, unit, kind] as typeof line) : line
+          );
+          return {
+            recipes: { ...state.recipes, [pid]: { ...state.recipes[pid]!, ing } },
+            recipeDirty: { ...state.recipeDirty, [pid]: true }
+          } as never;
+        });
+      }
+    }));
+  }
+
+  /** The engine's pricing example, worked on the owner's own menu (two each of her first three). */
+  private pricePreview(preview: OpsVals['priceModePreview']): OpsVals['priceModePreview'] {
+    if (!preview) return preview;
+    const e = this as unknown as PortedActions;
+    // HCB-004 a2: until her products are read the example has no menu to work on: unknown, not a total of the built-in six.
+    if (this.catalogueUnread())
+      return {
+        ...preview,
+        items: STAFF_COPY.homeProductsNotRead,
+        total: STAFF_COPY.homeProductsNotRead
+      };
+    const sample = PRODUCTS.slice(0, 3) as Array<{ id: string; short: string }>;
+    const sum = sample.reduce((t, p) => t + e.priceOf(p.id) * 2, 0);
+    const mode = String((preview as { mode?: unknown }).mode ?? '');
+    // The cost of the sample: unknown when any of the three is, and then the example says so instead of a total.
+    const cost = sample.reduce((t, p) => t + e.ingCost(p.id) * 2, 0);
+    const total =
+      mode === 'Flat price per box'
+        ? e.flatBox()
+        : mode === 'Menu prices + packaging fee'
+          ? sum + e.packFee()
+          : mode === 'Cookie cost × multiplier + packaging'
+            ? Math.round(cost * e.cogsMult() + e.packFee())
+            : sum;
+    return {
+      ...preview,
+      items: sample.length ? sample.map((p) => '2 ' + p.short).join(' · ') : 'No flavours yet',
+      total: Number.isFinite(total) ? PESO2(total) : COST_COPY.pending
+    };
+  }
+
+  /** Home and Settings in live mode: every value a record or a setting, or not shown (H1 to H6). */
+  private liveFacts(starved: OpsVals): Partial<OpsVals> {
+    const s = this.state;
+    const role = s.role as Role;
+    const name = this.staffNames[role] ?? '';
+    const hour = manilaHour(Number(s.now));
+    const owner = ownerOr('the owner');
+    const flavours = { permanent: 0, rotating: 0 };
+    for (const p of this.heldProducts() as ReadonlyArray<{ kind?: string }>)
+      if (p.kind === 'Rotating') flavours.rotating += 1;
+      else flavours.permanent += 1;
+    const suppliers = this.stockCatalogue?.suppliers.filter((sup) => sup.active).length;
+    const methods = this.paymentSync?.info?.methods.length;
+    const rules = this.orderFlow?.rules;
+    const staff = this.staffRows;
+    const count = (r: Role) => staff?.filter((row) => row.role === r).length ?? 0;
+    // The engine's own tone table: in its values, though not in the typed view model.
+    const tones =
+      (starved as { tone?: Record<string, { bg: string; fg: string; br: string }> }).tone ?? {};
+    const person = (row: { name: string; role: Role }) => {
+      const tone = tones[row.role === 'owner' ? 'brand' : row.role === 'helper' ? 'info' : 'mute'];
+      return {
+        name: row.name || ROLE_WORD[row.role],
+        role: ROLE_WORD[row.role],
+        can: STAFF_ACCESS[row.role].can,
+        extra: STAFF_ACCESS[row.role].extra,
+        bg: tone?.bg ?? '',
+        fg: tone?.fg ?? '',
+        br: tone?.br ?? ''
+      };
+    };
+    const month = starved.money ? this.monthTotals(s) : null;
+    // HCB-004 a2: unknown is not "none": until her products are read these say so, never a count or "No flavours yet".
+    const unread = this.catalogueUnread();
+    const launcherSub = (label: unknown, sub: unknown): unknown =>
+      label === 'Profit & loss'
+        ? PNL_PERIOD
+        : label === 'Products'
+          ? unread
+            ? STAFF_COPY.homeProductsNotRead
+            : PRODUCTS.length
+              ? flavours.permanent + ' permanent, ' + flavours.rotating + ' rotating'
+              : 'No flavours yet'
+          : label === 'Suppliers'
+            ? suppliers === undefined
+              ? ''
+              : suppliers + ' saved'
+            : label === 'Recipes' && unread
+              ? STAFF_COPY.homeProductsNotRead
+              : label === 'Recipes' && !PRODUCTS.length
+                ? 'No flavours yet'
+                : sub;
+    const settingsRow = <T extends { label: unknown; value: unknown; go: unknown }>(row: T): T =>
+      row.label === 'Payment methods and proof rule'
+        ? {
+            ...row,
+            value: methods === undefined ? '' : plural(methods, 'method', 'methods') + ' on',
+            go: () => this.openPayments()
+          }
+        : row.label === 'Collection options'
+          ? {
+              ...row,
+              value: rules ? rules.pickupDays.map((d) => PICKUP_DAY[d]).join(', ') + ' pickup' : '',
+              go: () => void this.openOrderRules()
+            }
+          : row.label === 'Who can see what'
+            ? {
+                ...row,
+                value: staff
+                  ? [
+                      plural(count('owner'), 'owner', 'owners'),
+                      plural(count('helper'), 'helper', 'helpers')
+                    ].join(', ')
+                  : ''
+              }
+            : row.label === 'Technical support access'
+              ? {
+                  ...row,
+                  value: staff
+                    ? staff
+                        .filter((r) => r.role === 'support')
+                        .map((r) => r.name || ROLE_WORD.support)
+                        .join(', ') || 'None'
+                    : ''
+                }
+              : (row.label === 'Recipes and versions' || row.label === 'Products and prices') &&
+                  unread
+                ? { ...row, value: STAFF_COPY.homeProductsNotRead }
+                : row.label === 'Recipes and versions' && !PRODUCTS.length
+                  ? { ...row, value: 'None yet' }
+                  : row;
+    return {
+      greeting:
+        (hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening') +
+        (name ? ', ' + name : '') +
+        '.',
+      todayDate: dayLabel(Number(s.now)),
+      ...(role === 'support'
+        ? {}
+        : {
+            deniedTitle: 'Only ' + owner + ' can open this',
+            deniedText:
+              'This screen holds costs, expenses or settings. Ask ' +
+              owner +
+              ' if you need something from it.'
+          }),
+      statusStrip: (starved.statusStrip ?? []).map((cell) =>
+        cell.label === 'Pickups'
+          ? { ...cell, value: this.orderSync?.loaded ? String(this.pickupsToday().length) : '—' }
+          : cell
+      ),
+      money:
+        starved.money && month
+          ? {
+              ...starved.money,
+              profitNum: this.num(month.profit, '₱'),
+              revenueText: PESO(month.revenue),
+              expenseText: PESO(month.totalExp)
+            }
+          : starved.money,
+      launcher: (starved.launcher ?? []).map((group) => ({
+        ...group,
+        items: group.items.map((item) => ({ ...item, sub: launcherSub(item.label, item.sub) }))
+      })) as OpsVals['launcher'],
+      settingsGroups: (starved.settingsGroups ?? []).map((group) => ({
+        ...group,
+        rows: group.rows.filter((row) => row.label !== 'Google Form bridge').map(settingsRow)
+      })),
+      // The ported sheets behind those rows: never the prototype's accounts or people.
+      payChannels: [],
+      users: (staff ?? []).map(person) as OpsVals['users'],
+      shopTagline: this.identity.tagline,
+      shopName: this.identity.shopName,
+      // The pricing sheet's worked example: her own first three flavours, not three ported ones.
+      priceModePreview: this.pricePreview(starved.priceModePreview)
+    };
+  }
+
+  /**
+   * MP-09 c2: every live page reads the owner's payment methods and shop texts through
+   * `get_shop_payment_info()` (anon may execute it). A failed or empty read shows no method, no
+   * QR and no footer claim. With no client (a live build with no Supabase) it shows the same.
+   */
+  async loadShopPayment(client: (PaymentClient & UploadClient) | null): Promise<boolean> {
+    if (!isLiveMode()) return false;
+    if (!client) {
+      this.paymentSync = undefined;
+      replacePayAccounts([]);
+      this.forceUpdate();
+      return false;
+    }
+    const sync: PaymentSync = new PaymentSync(client, {
+      current: () => !this.unmounted && this.paymentSync === sync,
+      apply: (accounts) => replacePayAccounts(accounts),
+      changed: () => this.forceUpdate(),
+      toast: (message, tone) => this.toast(message, tone)
+    });
+    this.paymentSync = sync;
+    return sync.loadPublic();
+  }
+
+  private paymentReadVals(): OpsVals['livePaymentRead'] {
+    if (!this.onCustomerScreen()) return null;
+    const sync = this.paymentSync;
+    const current = () => !this.unmounted && this.paymentSync === sync && this.onCustomerScreen();
+    const online = () =>
+      Boolean(this.state.online) && (typeof navigator === 'undefined' || navigator.onLine);
+    return {
+      state: sync?.publicState ?? 'failed',
+      canRetry: !!sync && online() && sync.publicState !== 'loading',
+      retry: () => {
+        if (sync && current() && online() && sync.publicState !== 'loading') void sync.loadPublic();
+      }
+    };
+  }
+
+  /** Product id → sold by the piece, from the public menu (migration 87); empty until the menu is read. */
+  private soldByPiece = new Map<string, boolean>();
+
+  /** True when every product in the customer's cart is known to be a cookie (or a cookie set). */
+  private cartAllCookies(): boolean {
+    const box = (this.state.cust as { box?: Record<string, number> } | undefined)?.box ?? {};
+    const ids = Object.keys(box).filter((id) => (box[id] ?? 0) > 0);
+    if (ids.length === 0) return false;
+    return ids.every((id) => {
+      if (this.soldByPiece.has(id)) return this.soldByPiece.get(id) === false;
+      const row = this.flavourSync?.current().find((flavour) => flavour.id === id);
+      return row ? row.item_type !== 'item' : false;
+    });
+  }
+
+  private shopMenu = new ShopMenuRead({
+    active: () => !this.unmounted && !this.flavourSync,
+    canRetry: () => this.onCustomerScreen(),
+    online: () => Boolean(this.state.online),
+    apply: (rows) => {
+      this.soldByPiece = new Map(
+        rows.filter((row) => row.id).map((row) => [String(row.id), row.sold_by_piece === true])
+      );
+      const { list, allergens, onMenu } = shopCatalogue(
+        rows,
+        PRODUCTS.map((p) => ({ ...p })),
+        { ...ALLERGENS }
+      );
+      replaceFlavours(list, allergens);
+      this.setState((s) => catalogueStatePatch(list, onMenu, s));
+    },
+    changed: () => this.forceUpdate()
+  });
+
+  /** Read only the published public projection; a staff catalogue remains authoritative. */
+  loadShopMenu(client: ShopClient | null): Promise<boolean> {
+    return isLiveMode() ? this.shopMenu.load(client) : Promise.resolve(false);
+  }
+
+  /**
+   * The flavour editor's entry points (MP-09 c1c): "Menu & flavours" in toolGroups and the
+   * products screen's "Edit price" button, live owner only. `state.sheet` carries an
+   * otherwise-unrecognised `kind` ('flavours'), which the ported engine stores and renders
+   * with an empty body (`titleOf['flavours']` is `''`, every `isX` false) — the live-only
+   * form host (F3) is the one new render branch that fills it in.
+   */
+  private openFlavourList(): void {
+    this.sheet('flavours', {});
+  }
+
+  /**
+   * The `updated_at` this flavour was showing the moment the editor opened is frozen into
+   * the sheet, not re-read fresh on every render: the form's own fields are uncontrolled
+   * (`defaultValue`, set once at mount), so a quick edit that lands while the form is open
+   * would otherwise let `saveFlavourForm` send a *fresh* `updated_at` alongside the form's
+   * *stale* field values — passing `save_flavour`'s conflict check and silently overwriting
+   * the quick edit instead of reporting a conflict.
+   */
+  private openFlavourEditor(pid: string, fromProduct = false): void {
+    const updatedAt = this.flavourSync?.current().find((r) => r.id === pid)?.updated_at ?? null;
+    if (fromProduct) this.setState({ liveProductReturnId: null, liveProductEditReturnId: null });
+    // The cost per cookie is set here too (Cine, 14 November 2026): read her typed costs so the field starts right.
+    void this.recipeBook.read();
+    this.sheet('flavours', { pid, updatedAt, fromProduct });
+  }
+
+  /** Cancel returns to the editor's entry point, never closing a newer sheet. No write is sent. */
+  private cancelFlavourEditor(sheet: FlavourSheetState): void {
+    if (
+      !isLiveMode() ||
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      this.state.sheet !== sheet
+    )
+      return;
+    if (!sheet.fromProduct) return this.openFlavourList();
+    this.closeSheet();
+    if (this.state.screen === 'products') this.setState({ liveProductEditReturnId: sheet.pid });
+  }
+
+  private openNewFlavour(): void {
+    this.sheet('flavours', { isNew: true });
+  }
+
+  private publishMenu = async (): Promise<void> => {
+    if (!this.flavourSync) return;
+    const status = await this.flavourSync.publish();
+    if (status === 'published') {
+      const shown = this.flavourSync.current().filter((r) => r.active).length;
+      this.toast(
+        shown
+          ? 'Published. Customers now see ' + plural(shown, 'flavour', 'flavours') + '.'
+          : 'Published. The shop shows no flavours — none are on the order form.'
+      );
+      return;
+    }
+    this.toast(
+      status === 'offline' ? FLAVOUR_TOASTS.offline : 'The menu could not be published. Try again.',
+      'warn'
+    );
+  };
+
+  /**
+   * Converts the form's pesos back to centavos and the same bounds `save_flavour` checks
+   * (`flavourFieldError`), so a sure refusal never reaches the network. A brand-new flavour
+   * (`id` null) gets a slug derived from its name, unique against every id already loaded —
+   * nothing is ever deleted, so that set is every flavour that has ever existed.
+   */
+  private async saveFlavourForm(
+    id: string | null,
+    fields: LiveFlavourFormFields,
+    expectedUpdatedAt: string | null
+  ): Promise<void> {
+    if (!this.flavourSync) return;
+    const priceInCents = priceCents(fields.price);
+    if (priceInCents === null) {
+      this.toast('Price is out of range.', 'warn');
+      return;
+    }
+    const dbFields: FlavourFields = {
+      name: fields.name,
+      short_name: fields.shortName,
+      price_cents: priceInCents,
+      kind: fields.kind,
+      item_type: fields.itemType,
+      ...(fields.typeId && this.productTypes ? { type_id: fields.typeId } : {}),
+      capacity_weight: fields.capacityWeight,
+      tag: fields.badge,
+      description: fields.description,
+      image_path: fields.imagePath,
+      allergens: fields.allergens,
+      active: fields.active,
+      sort_order: fields.sortOrder
+    };
+    const problem = flavourFieldError(dbFields);
+    if (problem) {
+      this.toast(problem, 'warn');
+      return;
+    }
+    const existing = new Set(this.flavourSync.current().map((r) => r.id));
+    const flavourId = id ?? slugifyFlavourId(fields.name, existing);
+    const status = await this.flavourSync.saveWhole(flavourId, dbFields, expectedUpdatedAt);
+    if (status === 'saved') {
+      // Its type may be new or changed: read the types again so the next edit starts from it (review, 14 November 2026).
+      if (this.productTypesClient) void this.loadProductTypes(this.productTypesClient);
+      this.toast('Flavour saved.');
+      this.openFlavourList();
+    }
+  }
+
+  private async setFlavourArchived(
+    id: string,
+    expectedUpdatedAt: string,
+    restore: boolean
+  ): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted || this.state.role !== 'owner') return false;
+    const sync = this.flavourSync;
+    if (!sync?.current().some((row) => row.id === id)) return false;
+    const status = restore
+      ? await sync.restore(id, expectedUpdatedAt)
+      : await sync.archive(id, expectedUpdatedAt);
+    return status === 'changed' && this.flavourSync === sync && this.state.role === 'owner';
+  }
+
+  /**
+   * The prototype read localStorage in a field initialiser and restores the saved books
+   * one commit after mount (see `OpsEngine.componentDidMount`, protected). Live mode never
+   * reads or writes `hc-ops-state-v1`: `state` already starts from the emptied live state
+   * (constructor, above), so this skips straight to `afterRestore` without calling
+   * `super.componentDidMount()`, which would call the protected `loadState()`.
+   */
+  componentDidMount(): void {
+    // StrictMode unmounts and remounts the same instance in development.
+    this.unmounted = false;
+    if (isLiveMode()) {
+      clearStoredBooks();
+      this.tillClassic = readClassicTill();
+      // S2: coming back to the front, the day is read again: she may have sold on another device meanwhile.
+      document.addEventListener('visibilitychange', this.onForeground);
+      const bazaar = readBazaar();
+      if (bazaar) {
+        // S3: the saved copy keeps the event and not the drawer. A started day carries its float on the event, so the
+        // drawer comes back with no signal; with signal it is confirmed from the day (`confirmHeldDay`).
+        const floatCents = (bazaar.event as LiveEvent | null)?.floatCents;
+        this.setState(
+          typeof floatCents === 'number' && Number.isInteger(floatCents) && floatCents >= 0
+            ? { ...bazaar, drawer: { float: centavosToPesos(floatCents), counted: '' } }
+            : bazaar
+        );
+      }
+      // The saved copy can predate a sync that finished while unmounted: the queue is the truth.
+      if (this.state.syncState === 'syncing') this.setState({ syncState: 'idle' });
+      void this.reflectQueue();
+      this.afterRestore();
+      return;
+    }
+    super.componentDidMount?.();
+  }
+
+  /**
+   * Live mode only: follow the real viewport instead of the harness's device picker. Runs
+   * after the engine restores the saved books, because that restore resets `device`.
+   */
+  afterRestore(): void {
+    super.afterRestore();
+    if (!isLiveMode()) return;
+    const apply = () => {
+      const device = deviceForWidth(window.innerWidth);
+      if (this.state.device !== device) this.setState({ device });
+    };
+    apply();
+    window.addEventListener('resize', apply);
+    this.stopViewportTracking = () => window.removeEventListener('resize', apply);
+  }
+
+  private onForeground = (): void => {
+    if (document.visibilityState === 'visible') void this.refreshHeldDay({ force: true });
+  };
+
+  componentWillUnmount(): void {
+    document.removeEventListener('visibilitychange', this.onForeground);
+    this.closeLiveDay();
+    this.clearOrderRead(false);
+    this.flavourSync?.retire();
+    this.retireOperationsHealth();
+    this.closeKitchenTransfer();
+    this.eventEntry.dispose();
+    this.productionRecovery.dispose();
+    this.unmounted = true;
+    this.dropCountOwnership();
+    clearTimeout(this.resetNoticeTimer);
+    this.resetNoticeTimer = undefined;
+    clearInterval(this.healthTimer);
+    this.healthTimer = undefined;
+    super.componentWillUnmount?.();
+    this.stopViewportTracking?.();
+    this.settingsSync?.dispose();
+  }
+
+  /**
+   * The prototype's review harness — the phone/tablet frame picker, the role switcher
+   * and the width toggles — is part of the ported frame markup, which may not be edited.
+   * Switching it off is therefore done by starving it: with NEXT_PUBLIC_HARNESS=0 the
+   * engine stops producing those lists, and the ported `{(devices ?? []).map(…)}` and
+   * `{showPhoneWidths ? … : null}` branches render nothing. Same markup, no chrome.
+   *
+   * Live mode starves it unconditionally, regardless of NEXT_PUBLIC_HARNESS: the static
+   * export build never sets that variable, so HARNESS defaults true there, and a signed-in
+   * helper must not be able to flip the role switcher to the owner view. Routing follows
+   * the role loaded from the profile (`src/components/app/live-gate.tsx`), not a picker.
+   *
+   * This is not a security boundary. Row-level security is.
+   */
+  private retireOperationsHealth(): void {
+    this.operationsSourceGeneration += 1;
+    this.operationsLoadSeq += 1;
+    this.operationsClient = null;
+    this.operationsHealth = null;
+    this.operationsPhase = 'loading';
+    this.operationsQueue = -1;
+    clearInterval(this.healthTimer);
+    this.healthTimer = undefined;
+  }
+
+  async loadOperationsHealth(client: OperationsClient | null): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted || this.state.role === 'helper') return false;
+    const use = client ?? this.operationsClient;
+    if (!use) return false;
+    if (use !== this.operationsClient) {
+      this.retireOperationsHealth();
+      this.operationsClient = use;
+      this.setState({});
+    }
+    this.keepHealthFresh();
+    const seq = ++this.operationsLoadSeq,
+      actor = this.productionActorEpoch,
+      role = this.state.role;
+    const current = () =>
+      !this.unmounted &&
+      seq === this.operationsLoadSeq &&
+      actor === this.productionActorEpoch &&
+      role === this.state.role &&
+      use === this.operationsClient;
+    try {
+      if (!idb.supported()) throw new Error('Queue storage unavailable');
+      const [health, queue] = await Promise.all([fetchOperationsHealth(use), pendingSales()]);
+      if (!current()) return false;
+      this.operationsHealth = health;
+      this.operationsQueue = queue.length;
+      this.operationsPhase = 'ready';
+      this.setState({});
+      return true;
+    } catch {
+      if (!current()) return false;
+      this.operationsPhase = 'error';
+      this.operationsQueue = -1;
+      this.setState({});
+      return false;
+    }
+  }
+
+  /**
+   * A health read is trusted for five minutes (`healthView`). Re-read it while the page is
+   * visible, so a screen left open does not drift into "could not verify" and bring back
+   * alerts the last read had cleared. A hidden page waits for the gate's visibility
+   * re-check. Offline nothing can be re-read, so the alerts do return after five minutes.
+   */
+  private keepHealthFresh(): void {
+    if (this.healthTimer) return;
+    const generation = this.operationsSourceGeneration;
+    this.healthTimer = setInterval(() => {
+      if (
+        !this.unmounted &&
+        generation === this.operationsSourceGeneration &&
+        document.visibilityState === 'visible'
+      )
+        void this.loadOperationsHealth(null);
+    }, HEALTH_REFRESH_MS);
+  }
+
+  private operationsHealthRetry(): () => void {
+    const generation = this.operationsSourceGeneration,
+      actor = this.productionActorEpoch,
+      role = this.state.role;
+    return () => {
+      if (
+        this.unmounted ||
+        role === 'helper' ||
+        role !== this.state.role ||
+        actor !== this.productionActorEpoch ||
+        generation !== this.operationsSourceGeneration ||
+        !this.state.online ||
+        (typeof navigator !== 'undefined' && navigator.onLine === false) ||
+        !this.operationsClient
+      )
+        return;
+      void this.loadOperationsHealth(null);
+      this.toast('Checking recorded results. Backups are run by the operator.', 'warn');
+    };
+  }
+
+  /** The recorded checks as System health shows them, for the state given. */
+  private liveHealth(s: OpsEngineState) {
+    return healthView(
+      this.operationsHealth,
+      this.operationsPhase,
+      Date.now(),
+      this.operationsQueue < 0 ? -1 : Math.max(this.operationsQueue, s.unsynced),
+      s.online
+    );
+  }
+
+  /**
+   * Live only. The protected engine adds `backup` to the All tools badge and to Home's
+   * "things need you" line, and nothing else feeds that flag in live mode, so it stayed
+   * 'failed' whatever the recorded checks said. Keep it in step with them: 'failed' while
+   * any health row is raising an alert. The device's own queue is left out when the engine
+   * already counts it through `unsynced`. The wording the flag also drives ("Healthy",
+   * "Backed up") is replaced in `renderVals`, so 'ok' here never becomes a green claim.
+   */
+  componentDidUpdate(...args: Parameters<NonNullable<OpsProvider['componentDidUpdate']>>): void {
+    super.componentDidUpdate?.(...args);
+    if (!isLiveMode()) return;
+    if (this.kitchenDesk && !this.kitchenDesk.vals()) this.closeKitchenTransfer();
+    if (this.productionLateSaved.length) this.mergeLateProductionResults();
+    if (this.productionWritable()) {
+      const changed = this.productionDrafts.sync(
+        this.productionCaptureGeneration === this.productionRecovery.generation
+          ? (args[1] as unknown as ProductionProjection)
+          : null,
+        this.state as unknown as ProductionProjection
+      );
+      this.productionCaptureGeneration = this.productionRecovery.generation;
+      if (Object.keys(changed.patch).length) this.setState(changed.patch as never);
+      else if (changed.changed) this.setState({});
+      const before = this.productionRecovery.phase;
+      if (!this.productionRecovery.persist() && before !== this.productionRecovery.phase)
+        this.setState({});
+    }
+    if ((args[1] as { role?: unknown } | undefined)?.role !== this.state.role) {
+      this.clearOrderRead();
+      this.retireOperationsHealth();
+      this.productionActorEpoch += 1;
+      this.recipeBook.reset();
+      this.retireRecipeDraftSession();
+      this.stockReadState = this.stockCatalogue ? 'failed' : 'idle';
+      this.booksLoadSeq += 1;
+      this.booksReadState = this.booksRows ? 'failed' : 'idle';
+      this.setState({});
+    }
+    if (this.productionRecordedAway) this.noticeProductionRecordedAway();
+    this.syncKeptRecipeEdits();
+    // HCB-013: an address that named a recipe opens it as soon as her catalogue is held.
+    if (this.recipePending) this.applyRecipeRoute();
+    if (this.state.screen !== 'recipes' && (this.recipeRestoreEdit || this.state.liveRecipeEdit)) {
+      this.recipeRestoreEdit = null;
+      this.setState({ liveRecipeEdit: null } as never);
+    }
+    // HCB-012: leaving Inventory by any way but Back forgets where Compare prices came from and closes its item page.
+    if (this.state.liveStockReturn && this.state.screen !== 'inventory')
+      this.setState({ liveStockReturn: null, liveStockOpen: null, liveStockPriceOpen: false });
+    // The till took over (signal lost or access narrowed): when signal returns it stays, mid-sale, until Events is chosen.
+    if (this.bazaarDirectory && !this.canLeaveTill()) {
+      this.bazaarDirectory = false;
+      this.bazaarDays.reset();
+    }
+    if (
+      (args[1] as { role?: unknown } | undefined)?.role !== this.state.role &&
+      this.state.role !== 'owner'
+    )
+      this.dropCountOwnership();
+    const s = this.state;
+    const backup = this.liveHealth(s).healthRows.some(
+      (row) => row.bad && (row.label !== 'Bazaar sync' || !(s.unsynced > 0))
+    )
+      ? 'failed'
+      : 'ok';
+    if (s.backup !== backup) this.setState({ backup });
+    // D3: the till opening (or a day starting under it) reads the day's prices again.
+    const tillShowing =
+      s.role === 'owner' &&
+      s.screen === 'bazaar' &&
+      !!(s.event as LiveEvent | null)?.dayId &&
+      !this.bazaarDirectoryShowing();
+    if (tillShowing && !this.tillPricesShowing) {
+      void this.refreshHeldPrices();
+      void this.refreshHeldDay({ force: true });
+    }
+    this.tillPricesShowing = tillShowing;
+    this.syncLiveDay();
+  }
+  private tillPricesShowing = false;
+
+  /**
+   * The engine works out the open recipe on every render and needs a flavour to do it. With no
+   * flavour at all (an empty menu), it is given the blank one for the call, and the recipe it
+   * returns says so instead of showing a version, a yield and a cost nobody entered.
+   */
+  recipeVals(s: OpsEngineState, isDesktop: boolean, isTablet: boolean): Record<string, unknown> {
+    const ported = (
+      OpsProvider.prototype as unknown as {
+        recipeVals: (s: OpsEngineState, d: boolean, t: boolean) => Record<string, unknown>;
+      }
+    ).recipeVals;
+    if (!isLiveMode() || PRODUCTS.some((p) => p.id === s.recipeOpen))
+      return ported.call(this, s, isDesktop, isTablet);
+    // The engine's by-id table: one of its exports, though not in its type file.
+    const flavours = (engineModule as unknown as { P: Record<string, unknown> }).P;
+    const blank = { yield: 1, ing: [] };
+    flavours[''] = NO_FLAVOUR;
+    try {
+      const vals = ported.call(
+        this,
+        {
+          ...s,
+          recipeOpen: '',
+          recipes: { ...(s.recipes as object), '': blank },
+          recipeBase: { ...(s.recipeBase as object), '': blank },
+          recipeVer: { ...(s.recipeVer as object), '': 1 }
+        } as OpsEngineState,
+        isDesktop,
+        isTablet
+      );
+      return {
+        ...vals,
+        recipe: {
+          ...(vals.recipe as object),
+          version: '',
+          yieldText: 'No flavours yet',
+          costText: '',
+          perBall: ''
+        }
+      };
+    } finally {
+      delete flavours[''];
+    }
+  }
+
+  /** The inherited screens and badges call this method; demo uses the original implementation. */
+  notifs(s: OpsEngineState): LiveAlert[] {
+    if (!isLiveMode())
+      return (
+        OpsProvider.prototype as unknown as { notifs: (s: OpsEngineState) => LiveAlert[] }
+      ).notifs.call(this, s);
+    const alerts: LiveAlert[] = [];
+    const channels = (s.channels ?? {}) as Record<string, boolean>;
+    const add = (
+      channel: string,
+      k: LiveAlert['k'],
+      label: string,
+      sub: string,
+      tone: LiveAlert['tone']
+    ) => {
+      if (channels[channel] === false || (s.role !== 'owner' && k !== 'health')) return;
+      if (s.role === 'helper') return;
+      alerts.push({
+        k,
+        label,
+        sub,
+        tone,
+        urgency:
+          tone === 'bad'
+            ? 'Action needed now'
+            : tone === 'warn'
+              ? 'Needs attention soon'
+              : 'Information',
+        go: () => this.go(k)
+      });
+    };
+    // Checks that were never switched on are not `bad` (see `healthView`), so they raise nothing here.
+    for (const row of this.liveHealth(s).healthRows.filter((row) => row.bad)) {
+      add(
+        row.label === 'Encrypted database backup' ? 'Backup failure' : 'System error',
+        'health',
+        String(row.label) + ': ' + String(row.value),
+        'System health',
+        'bad'
+      );
+    }
+    if (s.role !== 'owner') return alerts;
+    const orders = this.orderSync?.current() ?? [];
+    const newest = orders
+      .filter(
+        (o) =>
+          !['Cancelled', 'No-show', 'Completed'].includes(o.state) &&
+          o.placedAt <= Date.now() &&
+          Date.now() - o.placedAt <= 86_400_000
+      )
+      .sort((a, b) => b.placedAt - a.placedAt)[0];
+    if (newest) add('New order', 'orders', 'New order ' + newest.id, newest.name, 'info');
+    const today = manilaToday();
+    const pickups = this.pickupsToday();
+    if (pickups.length)
+      add(
+        'Pickup reminder',
+        'orders',
+        `${pickups.length} order(s) for pickup today`,
+        'Fulfilment · ' + today,
+        'info'
+      );
+    const low = this.stockCatalogue?.items.filter((i) => i.active && i.onHand < i.parLevel) ?? [];
+    if (low.length)
+      add(
+        'Low stock',
+        'inventory',
+        `${low.length} stock item(s) below reorder level`,
+        low.map((i) => i.name).join(', '),
+        'warn'
+      );
+    if (this.stockCatalogue && this.recipeRows && this.orderSync?.loaded) {
+      const plan = (
+        this as unknown as { groceryPlan: (s: OpsEngineState) => Array<{ key: string }> }
+      ).groceryPlan(s);
+      if (plan.length)
+        add(
+          'Grocery shortage',
+          'grocery',
+          `${plan.length} item(s) on the grocery list`,
+          'Based on current orders, stock and recipes',
+          'warn'
+        );
+    }
+    return alerts;
+  }
+
+  /** Product ids named by the server's production variances (engine-shaped state, read loosely). */
+  private varianceProductIds(): string[] {
+    const variances = (this.state as unknown as { variances?: unknown }).variances;
+    if (!Array.isArray(variances)) return [];
+    return variances.flatMap((v: unknown) => {
+      const pid = (v as { pid?: unknown } | null)?.pid;
+      return typeof pid === 'string' ? [pid] : [];
+    });
+  }
+
+  /**
+   * This phone's own event sales, formatted as the engine's sales log formats a live sale. They reach the books only
+   * once sent, so Money > Sales lists them while the books are unread. Read only; an unknown product id reads
+   * "Product unavailable" rather than throwing.
+   */
+  private phoneSalesRows(): OpsVals['phoneSales'] {
+    const st = this.state;
+    const now = Number(st.now);
+    return ((st.sales as EventSale[] | undefined) ?? []).map((x) => ({
+      what:
+        Object.keys(x.items)
+          .map((k) => `${x.items[k]} ${RENDER_PRODUCTS[k]?.short ?? 'Product unavailable'}`)
+          .join(', ') || 'Sale',
+      when:
+        (st.event?.name ? `${st.event.name} · ` : '') +
+        relWhen(x.at, now) +
+        (x.clerk ? ` · ${x.clerk}` : ''),
+      amount: x.total === 0 ? 'Free' : PESO(x.total)
+    }));
+  }
+
+  renderVals(): OpsVals {
+    const vals = isLiveMode()
+      ? renderWithSaleLabels(
+          this.state.sales,
+          RENDER_PRODUCTS,
+          () => super.renderVals(),
+          // HCB-004 g: the locked "Yield against plan" looks up every variance product. One she added herself is
+          // not in the engine's lookup while the catalogue is unread; lend a name for this render only.
+          this.varianceProductIds()
+        )
+      : super.renderVals();
+    if (HARNESS && !isLiveMode()) return vals;
+    const catalogueRows = this.flavourSync?.current() ?? [];
+    const archivedIds = new Set(
+      catalogueRows.filter((row) => row.archived_at).map((row) => row.id)
+    );
+    const workingCatalogue = PRODUCTS.filter((product) => !archivedIds.has(product.id));
+    const counting =
+      isLiveMode() &&
+      this.state.role === 'owner' &&
+      this.state.screen === 'inventory' &&
+      (!!this.state.stocktake ||
+        [...this.pendingMovements.values()].some((f) => f.kind === 'count'));
+    const starved = {
+      ...vals,
+      devices: [],
+      roles: [],
+      showPhoneWidths: false,
+      ...(this.bazaarDirectoryShowing()
+        ? { focusMode: false, showTopBar: true, showBack: false }
+        : {}),
+      ...(counting
+        ? {
+            focusMode: false,
+            showRail: this.state.device === 'desktop' || this.state.device === 'tablet',
+            showDock: this.state.device !== 'desktop' && this.state.device !== 'tablet',
+            showTopBar: true,
+            showBack: true,
+            toastStyle:
+              this.state.device !== 'desktop' && this.state.device !== 'tablet'
+                ? String(vals.toastStyle).replace('bottom: 18px', 'bottom: 96px')
+                : vals.toastStyle,
+            goBack: () => {
+              if (!this.state.liveCountPaused) this.setState({ liveCountPaused: true });
+              else if (this.state.liveStockOpen) this.closeStockItem();
+              else this.go('today');
+            }
+          }
+        : {})
+    } as OpsVals;
+    if (!isLiveMode()) return starved;
+    const { setupPending, ...health } = this.liveHealth(this.state);
+    const healthProblems = health.healthRows.filter((row) => row.bad).length;
+    const quietSetup = setupPending && healthProblems === 0;
+    // Live: the real app, not the review harness. No header row, flow strip or flow bar,
+    // and the device frame fills the screen instead of drawing a phone/tablet mock-up (so the
+    // mock-up bezel — radius, border, shadow — goes too; background colours are unchanged).
+    // `transform: scale(1)` is kept only to match the prototype's frame; the sheets, toast,
+    // dock and quick-action layer are positioned by the frame's inner `position: relative` box.
+    // The fabricated PRIOR_MONTHS trend (protected `pnlVals`) is dropped down to the real
+    // current month, and its bar height is recomputed from just that row — the same
+    // Math.max(6, round(amt/max*100)) clamp the protected engine uses, with `max` now
+    // trivially this row's own profit (or the reduce's floor of 1 when profit <= 0).
+    const trend = Array.isArray(starved.plTrend) ? starved.plTrend : [];
+    const profit = this.pnlTotals(this.state).profit;
+    const barHeight = Number.isFinite(profit)
+      ? Math.max(6, Math.round((profit / Math.max(1, profit)) * 100))
+      : 6;
+    const healthTool = (item: ToolItem): ToolItem =>
+      item.label === 'System health'
+        ? { ...item, sub: health.healthTitle, badge: healthProblems || null }
+        : item.label === 'Backups & export'
+          ? { ...item, sub: 'Recorded checks and books CSV' }
+          : item;
+    // MP-09 c1c: the flavour editor's entry points and form host, live owner only.
+    const ownerTools =
+      this.state.role === 'owner'
+        ? this.liveToolGroups(starved.toolGroups ?? [])
+            .flatMap((group) => group.items)
+            .map(healthTool)
+        : null;
+    const facts = this.liveFacts(starved);
+    const customerAction = this.customerActionScope();
+    const productEditor = this.state.sheet as FlavourSheetState | null;
+    const statusSheet = this.state.sheet as { kind?: string } | null;
+    const closeStatus = statusSheet?.kind === 'dropState' || statusSheet?.kind === 'closeDrop';
+    const closeProductEditor =
+      this.state.role === 'owner' &&
+      productEditor?.kind === 'flavours' &&
+      productEditor.fromProduct;
+    return {
+      ...starved,
+      ...facts,
+      ...(closeProductEditor ? { closeSheet: () => this.cancelFlavourEditor(productEditor) } : {}),
+      ...(closeStatus
+        ? {
+            closeSheet: this.shopOverrideAction(() => {
+              if (this.state.sheet === statusSheet) this.closeSheet();
+            })
+          }
+        : {}),
+      ...(CUSTOMER_SCREENS.includes(this.state.screen as ScreenKey) &&
+      liveScreenFor(this.state.screen as ScreenKey)
+        ? { pageMax: 'none', pagePad: '0' }
+        : {}),
+      recTickAll: this.liveTickAll(starved.recTickAll),
+      bareFrame: true,
+      showFlowStrip: false,
+      flow: null,
+      frameOuterStyle: 'width: 100%; height: 100dvh; flex-shrink: 0',
+      frameStyle:
+        'width: 100%; height: 100%; transform: scale(1); transform-origin: top left; display: flex; overflow: hidden; background: ' +
+        (this.state.device === 'desktop' ? '#F6F4F2' : '#FFFFFF'),
+      plTrend: trend.filter((row) => row.now).map((row) => ({ ...row, v: barHeight })),
+      rules: this.state.role === 'owner' ? this.liveRules(starved.rules ?? []) : starved.rules,
+      // B1: the owner's All tools is one entry list, each under its one home; the dock, the
+      // sidebar and the sub-tab strip are read from the same list and the function map.
+      toolGroups: ownerTools
+        ? this.liveToolIndex(ownerTools)
+        : (starved.toolGroups ?? []).map((group) => ({
+            ...group,
+            items: group.items.map(healthTool)
+          })),
+      ...this.liveDock(starved, ownerTools),
+      // Home's grid and the Settings row word the engine's `backup` flag; say what was recorded instead.
+      launcher: (facts.launcher ?? []).map((group) => ({
+        ...group,
+        items: group.items.map((item) =>
+          item.label === 'System health'
+            ? { ...item, sub: health.healthTitle }
+            : item.label === 'Backups & export'
+              ? { ...item, sub: 'Recorded checks and books CSV' }
+              : item
+        )
+      })),
+      settingsGroups: (facts.settingsGroups ?? []).map((group) => ({
+        ...group,
+        rows: group.rows.map((row) =>
+          row.label === 'Backups and export' ? { ...row, value: health.healthTitle } : row
+        )
+      })),
+      productRows:
+        this.state.role === 'owner'
+          ? this.liveProductRows(starved.productRows ?? [])
+          : starved.productRows,
+      ...(this.state.screen === 'products'
+        ? {
+            pageSub: this.catalogueUnread()
+              ? STAFF_COPY.homeProductsNotRead
+              : workingCatalogue.length +
+                ' flavours · ' +
+                workingCatalogue.filter(
+                  (product) =>
+                    (this.state.dropActive as Record<string, boolean> | undefined)?.[product.id] !==
+                    false
+                ).length +
+                ' on menu'
+          }
+        : {}),
+      recipe: starved.recipe
+        ? {
+            ...this.liveRecipeEditor(starved),
+            isNew:
+              this.recipeRows !== null &&
+              !this.recipeRows.some((row) => row.productId === this.state.recipeOpen),
+            costText: this.costKnown(this.state.recipeOpen)
+              ? starved.recipe.costText
+              : COST_COPY.pending
+          }
+        : starved.recipe,
+      pl: this.livePnl(starved.pl),
+      bzCloseout: this.singularCloseout(this.liveCloseout(starved.bzCloseout)),
+      customers: (starved.customers ?? []).map((c) => ({
+        ...c,
+        count: singularCookies(String(c.count))
+      })),
+      invRows: (starved.invRows ?? []).map((row) => {
+        row = { ...row, qtyText: singularCookies(String(row.qtyText)) };
+        const item = this.stockCatalogue?.items.find((i) => i.name === row.name);
+        return ['Ingredients', 'Packaging'].includes(String(this.state.invTab)) &&
+          !item?.lastCounted
+          ? { ...row, sub: 'Opening count pending' }
+          : row;
+      }),
+      sheet: this.liveSheet(starved.sheet),
+      ...this.liveTillVals(starved),
+      ...this.liveScreenVals(starved, ownerTools),
+      liveForm: this.liveFormVals(),
+      livePay: this.livePayVals(),
+      liveTexts: this.liveTextsVals(),
+      liveMessages: this.liveMessagesVals(),
+      ...(this.orderSync
+        ? {
+            orderList: this.liveOrderList(starved.orderList),
+            od: this.liveOrderDetail(starved.od)
+          }
+        : {}),
+      liveOrderRules: this.liveOrderRulesVals(),
+      liveOrderExtras: this.liveOrderExtrasVals(),
+      liveMoney:
+        isLiveMode() && this.state.role === 'owner' && this.state.screen === 'pnl'
+          ? {
+              ...this.moneyDesk.vals(),
+              entry: this.moneyEntry.vals(),
+              recipeCosts: this.recipeBook.vals().items.map((item) => ({
+                id: item.id,
+                name: item.name,
+                costText: item.costText,
+                open: () => this.setState({ liveRecipeTarget: item.id }, () => this.go('recipes'))
+              }))
+            }
+          : null,
+      liveHelperHome:
+        isLiveMode() && this.state.role === 'helper' && this.state.screen === 'today'
+          ? { go: { bazaar: () => this.go('bazaar'), sales: () => this.go('sales') } }
+          : null,
+      liveBooksRead:
+        isLiveMode() && this.state.role === 'owner' && this.state.screen === 'sales'
+          ? this.moneyDesk.booksRead()
+          : null,
+      phoneSales:
+        isLiveMode() && this.state.role === 'owner' && this.state.screen === 'sales'
+          ? this.phoneSalesRows()
+          : [],
+      liveMake: this.state.role === 'owner' && isLiveMode() ? this.makeDesk.vals() : null,
+      liveCustomers: this.state.role === 'owner' && isLiveMode() ? this.customerDesk.vals() : null,
+      liveHome: this.liveHomeVals(starved),
+      profitGoal: this.profitGoalVals(starved),
+      liveScheduled: this.liveScheduledVals(),
+      liveBooks: this.liveBooksVals(),
+      ...health,
+      healthCanRetry:
+        !this.unmounted && this.state.role !== 'helper' && this.operationsClient !== null,
+      // Home's card: green, red, or neutral while no backup has run and nothing else is wrong.
+      system: {
+        ...starved.system,
+        ok: health.healthOk,
+        bad: !health.healthOk && !quietSetup,
+        pending: quietSetup,
+        label: health.healthTitle,
+        detail: quietSetup ? SETUP_PENDING_COPY.home : health.healthSub
+      },
+      // The database's books are exportable; demo record-group examples are never live evidence.
+      recordGroups:
+        this.state.role === 'owner' && this.booksRows?.lines.length
+          ? [
+              {
+                title: 'Database books',
+                countText: plural(this.booksRows.lines.length, 'record', 'records'),
+                rows: this.booksRows.lines.slice(-10).map((line) => ({
+                  what: line.label,
+                  when: dayTimeLabel(line.at),
+                  value: PESO(line.amountCents / 100)
+                }))
+              }
+            ]
+          : [],
+      hasRecords: this.state.role === 'owner' && !!this.booksRows?.lines.length,
+      retryBackup: this.operationsHealthRetry(),
+      contactSupport: () =>
+        this.toast('Please contact technical support and share the result shown here.', 'warn'),
+      ...(this.state.role !== 'owner'
+        ? { exportNow: () => this.toast('Only the owner can export the books.', 'warn') }
+        : {}),
+      liveStockItems: this.liveStockItemsVals(),
+      quickActions: (vals.quickActions ?? []).map((action) =>
+        action.label === 'Record a purchase' ? { ...action, label: 'Add to inventory' } : action
+      ),
+      liveStock: this.liveStockVals(),
+      liveStockRead: this.stockReadView(),
+      liveBazaar:
+        isLiveMode() && this.state.role === 'owner'
+          ? {
+              ...this.bazaarDays.vals(),
+              catalogue: { held: this.catalogueHeld() },
+              kitchen: this.kitchenDesk?.vals() ?? null,
+              entry: this.eventEntry.vals(),
+              navigation: {
+                route: this.bazaarRoute(),
+                restore: this.restoreBazaarRoute,
+                directory: this.bazaarDirectoryShowing(),
+                tillOnly: !!this.state.event && !this.canLeaveTill(),
+                events: this.state.event && this.canLeaveTill() ? this.openBazaarEvents : null,
+                resume: this.state.event ? this.resumeBazaarTill : null,
+                heldName: String((this.state.event as LiveEvent | null)?.name ?? '')
+              }
+            }
+          : null,
+      // S3: what a helper's Bazaar screen needs (find the open day, close it). Never for the owner.
+      liveHelperBazaar:
+        isLiveMode() && this.state.role === 'helper' ? this.helperBazaarVals() : null,
+      // Worked out only on the Recipes screen: nothing else reads it, and the till must not pay for it.
+      liveRecipes:
+        isLiveMode() && this.state.role === 'owner' && this.state.screen === 'recipes'
+          ? {
+              ...this.liveRecipeBookView(),
+              editor: { restore: this.recipeRestoreEdit, report: this.reportRecipeEditor },
+              keptEdit: (id: string) => this.keptRecipeEditView(id)
+            }
+          : null,
+      liveRecipeNavigation:
+        isLiveMode() && this.state.role === 'owner'
+          ? { route: this.recipeRoute(), restore: this.restoreRecipeRoute }
+          : null,
+      liveProduction:
+        this.state.role === 'owner' && this.state.screen === 'bake'
+          ? this.liveProductionView()
+          : null,
+      batch: this.guardedProductionBatch(starved.batch),
+      liveBatchCounts: this.productionCountsView(),
+      liveDough: this.productionDoughView(starved.mix),
+      ...this.liveToastVals(starved),
+      // S3: on a started day "Close out" opens the day's review, never the old close-out sheet (which the database refuses).
+      ...((this.state.event as LiveEvent | null)?.dayId
+        ? { askClose: () => this.openDayReview() }
+        : {}),
+      liveStockSuppliers: this.liveStockSuppliersVals(),
+      liveSupplierDirectory: this.liveStockSuppliersVals(true),
+      liveRecipeDrafts: this.liveRecipeDraftsVals(),
+      // S2: the ported start list is never offered in live mode: a day is started from the Bazaar page (`liveBazaar`).
+      events: [] as OpsVals['events'],
+      cust: {
+        ...this.liveStatusCust(this.livePayCust(starved.cust)),
+        countText: cartWords(starved, this.cartAllCookies()).countText
+      },
+      liveStatusRead: this.liveStatusReadVals(),
+      liveCustomerPayment: this.liveCustomerPaymentVals(),
+      openLookup: () => {
+        if (customerAction()) this.openLookupSheet();
+      },
+      openWaitlist: () => {
+        if (customerAction()) this.openWaitlist();
+      },
+      liveCheckout: this.liveCheckoutVals(),
+      shopBox: this.shopBoxVals(),
+      livePaymentRead: this.paymentReadVals(),
+      liveLookup: this.liveLookupVals(),
+      liveWaitlist: this.liveWaitlistVals(),
+      shopFooter: this.shopFooterVals(),
+      liveShopMenuRead: this.onCustomerScreen() && !this.flavourSync ? this.shopMenu.view() : null,
+      // HCB-004: told only to a signed-in phone that reads her catalogue: a staff screen, or the owner's preview of the
+      // shop. A public visitor's engine role is 'owner' too, and never reads it: the shop keeps its own menu notice.
+      ...(this.flavourSync || !this.onCustomerScreen()
+        ? { catalogueHeld: this.catalogueHeld() }
+        : {}),
+      // HCB-004 a2: the engine works the bake plan out of the built-in six until her products are read. Unknown is not zero:
+      // no rows, no "cookies to bake" figure and no "everything is baked" (the Shopping and Production pages say why).
+      ...(this.catalogueUnread()
+        ? {
+            bakeRows: [],
+            bakeAllDone: false,
+            bakeTotals: { toBakeNum: STAFF_COPY.homeProductsNotRead, summary: '' }
+          }
+        : {}),
+      liveShopAvailability: this.onCustomerScreen() ? this.shopAvailability.view() : null,
+      liveShopOverride:
+        this.state.role === 'owner' && !this.gateNarrow ? this.shopOverrideWrites.view() : null,
+      dropStates: this.shopOverrideChoices(starved.dropStates),
+      dropStateOptions: this.shopOverrideChoices(starved.dropStateOptions),
+      closeDropRollover: this.shopOverrideAction(starved.closeDropRollover),
+      closeDropConfirm: this.shopOverrideAction(starved.closeDropConfirm),
+      drop2: {
+        ...(facts.drop2 ?? starved.drop2),
+        extend: this.shopOverrideAction(starved.drop2.extend),
+        reopen: this.shopOverrideAction(starved.drop2.reopen),
+        closeEarly: this.shopOverrideAction(starved.drop2.closeEarly)
+      },
+      ...(this.onCustomerScreen() ? openingTimesBanner(starved, this.shopAvailability.view()) : {}),
+      // The cart's words hold for cookies and items alike: the shop's menu does not carry product types.
+      boxCountText: cartWords(starved, this.cartAllCookies()).boxCountText,
+      boxTitle: cartWords(starved, this.cartAllCookies()).boxTitle,
+      shopFlavours: this.liveShopSampler(starved.shopFlavours).map((flavour) =>
+        /confirmation required/i.test(String(flavour.allergens))
+          ? { ...flavour, allergens: 'Allergens: please ask us before ordering.' }
+          : flavour
+      ),
+      // MP-09 c1b: until the published menu is read, a customer page shows no flavours
+      // (the engine still holds the ported list, which is not the owner's menu). HCB-004: for the owner's
+      // preview the same holds until her own products are in hand.
+      ...(CUSTOMER_SCREENS.includes(this.state.screen as ScreenKey) &&
+      (this.flavourSync ? !this.catalogueHeld() : !this.shopMenu.loaded)
+        ? { shopFlavours: [] }
+        : {}),
+      // MP-09 b4: helpers (and any other non-owner) never see cost, expenses or profit, and
+      // see sale totals only when the owner's helperSeesSales switch is on.
+      ...(this.state.role === 'owner'
+        ? {}
+        : helperMoneyView(starved, {
+            seesTotals:
+              (this.state.cfg as Record<string, unknown> | undefined)?.helperSeesSales === 1,
+            liveSales: (this.state.sales ?? []).length,
+            count: (n) => this.num(n)
+          }))
+    };
+  }
+
+  /** The rules sheet in live mode: the ported rows, DP-15's idle minutes and the helper-totals switch. */
+  private liveRules(rules: OpsVals['rules']): OpsVals['rules'] {
+    const cfg = (this.state.cfg ?? {}) as Record<string, unknown>;
+    const clamp = (n: number) => Math.min(IDLE_MINUTES_MAX, Math.max(IDLE_MINUTES_MIN, n));
+    const idle = IDLE_ROWS.map(({ role, label }) => {
+      const k = IDLE_SETTING_KEYS[role];
+      const minutes = idleMinutesFor(role, cfg);
+      return {
+        k,
+        label: role === 'owner' ? 'Sign ' + ownerOr('the owner') + ' out after' : label,
+        value: minutes,
+        valueText: plural(minutes, 'minute', 'minutes') + ' idle',
+        note: 'With no taps for this long, the device signs out. 15 minutes to 8 hours.',
+        down: () => this.setCfg(k, clamp(minutes - 15)),
+        up: () => this.setCfg(k, clamp(minutes + 15)),
+        set: (e?: unknown) =>
+          this.numCfg(
+            k,
+            (e as { target?: { value?: unknown } } | undefined)?.target?.value,
+            IDLE_MINUTES_MIN,
+            IDLE_MINUTES_MAX
+          )
+      };
+    });
+    const seesTotals = cfg.helperSeesSales === 1;
+    const helperTotals = {
+      k: 'helperSeesSales',
+      label: 'Helpers see sale totals',
+      value: seesTotals ? 1 : 0,
+      valueText: seesTotals ? 'On' : 'Off',
+      note: 'The running bazaar total and past drop totals. Costs, expenses and profit stay hidden either way.',
+      down: () => this.setCfg('helperSeesSales', 0),
+      up: () => this.setCfg('helperSeesSales', 1),
+      set: (e?: unknown) =>
+        this.numCfg(
+          'helperSeesSales',
+          (e as { target?: { value?: unknown } } | undefined)?.target?.value,
+          0,
+          1
+        )
+    };
+    // A2: how long Bazaar Mode may open with no signal after this phone's last online check.
+    const hours = offlineOpenHoursFor(cfg);
+    const clampHours = (n: number) =>
+      Math.min(OFFLINE_OPEN_HOURS_MAX, Math.max(OFFLINE_OPEN_HOURS_MIN, n));
+    const offlineOpen = {
+      k: OFFLINE_OPEN_SETTING_KEY,
+      label: 'Bazaar Mode opens offline for',
+      value: hours,
+      valueText: plural(hours, 'hour', 'hours'),
+      note: 'With no signal, a phone holding a running event still opens Bazaar Mode for this long after its last online check. 1 to 72 hours.',
+      down: () => this.setCfg(OFFLINE_OPEN_SETTING_KEY, clampHours(hours - 1)),
+      up: () => this.setCfg(OFFLINE_OPEN_SETTING_KEY, clampHours(hours + 1)),
+      set: (e?: unknown) =>
+        this.numCfg(
+          OFFLINE_OPEN_SETTING_KEY,
+          (e as { target?: { value?: unknown } } | undefined)?.target?.value,
+          OFFLINE_OPEN_HOURS_MIN,
+          OFFLINE_OPEN_HOURS_MAX
+        )
+    };
+    // N11: a value she has never saved is the database's default, and says so until she does.
+    return [...rules, ...idle, offlineOpen, helperTotals].map((row) =>
+      this.settingsSync?.isDefault(String((row as { k?: unknown }).k))
+        ? { ...row, note: DEFAULT_NOTE + ' ' + String(row.note ?? '') }
+        : row
+    );
+  }
+
+  // ------------------------------------------------------------------ B3: the shop's open state
+
+  /**
+   * Every live page reads the owner's ordering window and the "close now" switch from the
+   * server. The switch is always applied; the window only where the staff settings are not
+   * loaded (a customer page), because a signed-in owner's settings already carry it and an
+   * unsaved edit must not be overwritten. A failed or malformed read keeps what was there.
+   */
+  private shopAvailability = new ShopAvailabilityRead({
+    active: () => !this.unmounted,
+    canRetry: () => this.onCustomerScreen(),
+    online: () => Boolean(this.state.online),
+    apply: (status, current) =>
+      this.setState((s) =>
+        current()
+          ? {
+              shopOverride: status.override,
+              cfg: this.settingsSync
+                ? s.cfg
+                : { ...(s.cfg as Record<string, unknown>), ...status.window }
+            }
+          : null
+      ),
+    changed: () => this.forceUpdate()
+  });
+
+  loadShopStatus(client: ShopStatusClient | null): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted) return Promise.resolve(false);
+    if (client !== (this.shopClient ?? null)) this.shopClientEpoch += 1;
+    this.shopClient = client ?? undefined;
+    return this.shopAvailability.load(client);
+  }
+
+  /** A customer's banner must not go stale: read again when the tab comes back. */
+  reloadShopStatus(): Promise<boolean> {
+    return this.loadShopStatus(this.shopClient ?? null);
+  }
+
+  /**
+   * The owner's "close now", "sold out", "closing soon", "open" and "follow my schedule" reach the
+   * server first; only then does the ported action run, so the screen, its toast and the database
+   * agree. A refused or unsent switch changes nothing on screen.
+   */
+  private installShopOverrides(): void {
+    const shop = this as unknown as {
+      setDropState: (st: string) => void;
+      closeDropEarly: () => void;
+      reopenDrop: () => void;
+      extendDrop: () => void;
+      closeDrop: () => void;
+    };
+    const { setDropState, closeDropEarly, reopenDrop, extendDrop, closeDrop } = shop;
+    shop.setDropState = (st) => {
+      const mode = st === 'auto' ? null : (st as ShopOverride);
+      void this.persistOverride(mode, () => setDropState(st));
+    };
+    shop.closeDropEarly = () => void this.persistOverride('closed', closeDropEarly);
+    shop.reopenDrop = () => void this.persistOverride(null, reopenDrop);
+    // Extending the closing time also hands the shop back to the window (the ported action clears the hold).
+    shop.extendDrop = () => void this.persistOverride(null, extendDrop);
+    // Closing the drop (the rollover) also clears the hold, but only when the engine lets it close: it refuses
+    // while orders are unfinished. So the ported action runs first and the server follows what it did. Its local
+    // ledger line is a demo-side effect that live mode has no books for until E1.
+    shop.closeDrop = () => {
+      const owner = this.shopOverrideOwner();
+      if (!owner.current()) return;
+      const before = (this.state as unknown as { dropNo: number }).dropNo;
+      closeDrop();
+      this.afterUpdate(() => {
+        if (owner.current() && (this.state as unknown as { dropNo: number }).dropNo !== before)
+          void this.persistOverride(null);
+      });
+    };
+  }
+
+  private shopOverrideOwner() {
+    const client = this.shopClient,
+      actor = this.productionActorEpoch,
+      epoch = this.shopClientEpoch;
+    return {
+      client,
+      current: () =>
+        !this.unmounted &&
+        !this.gateNarrow &&
+        this.state.role === 'owner' &&
+        actor === this.productionActorEpoch &&
+        epoch === this.shopClientEpoch &&
+        client === this.shopClient
+    };
+  }
+
+  private shopOverrideAction(action: () => void): () => void {
+    const owner = this.shopOverrideOwner(),
+      drop = this.state.dropNo;
+    return () => {
+      if (owner.current() && drop === this.state.dropNo) action();
+    };
+  }
+
+  private shopOverrideChoices<T extends OpsVals['dropStates'][number]>(rows: T[]): T[] {
+    return rows.map((row) => ({
+      ...row,
+      go: this.shopOverrideAction(() => {
+        const mode = shopOverrideMode(row.label);
+        if (mode) (this as unknown as { setDropState: (mode: string) => void }).setDropState(mode);
+      })
+    }));
+  }
+
+  private shopOverrideWrites = new ShopOverrideWrites({
+    retireReads: () => this.shopAvailability.retirePending(),
+    online: () =>
+      Boolean(this.state.online) && (typeof navigator === 'undefined' || navigator.onLine),
+    changed: () => this.forceUpdate(),
+    check: async (client) =>
+      (await this.loadShopStatus(client)) ? this.shopAvailability.currentMode() : undefined,
+    refresh: (client) => {
+      void this.loadShopStatus(client);
+    }
+  });
+
+  private async persistOverride(
+    mode: ShopOverride | null,
+    apply: () => void = () => undefined
+  ): Promise<boolean> {
+    if (this.unmounted || this.gateNarrow || this.state.role !== 'owner') return false;
+    const owner = this.shopOverrideOwner(),
+      client = owner.client,
+      drop = this.state.dropNo;
+    if (!client || !this.state.online || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      this.shopOverrideWrites.notSent(client, mode, {
+        owner: owner.current,
+        action: () => owner.current() && drop === this.state.dropNo
+      });
+      this.toast(STAFF_COPY.offline, 'warn');
+      return false;
+    }
+    const outcome = await this.shopOverrideWrites.save(
+      client,
+      mode,
+      {
+        owner: owner.current,
+        action: () => owner.current() && drop === this.state.dropNo
+      },
+      apply
+    );
+    if (outcome === 'retired') return false;
+    if (outcome === 'saved') return true;
+    this.toast(outcome === 'refused' ? RULES_COPY.switchRefused : STAFF_COPY.offline, 'warn');
+    return false;
+  }
+
+  // ------------------------------------------------------------------ B3: the order rules form
+
+  /** `refresh` is the reload after a save: the save was acknowledged, so a failed read must not say otherwise. */
+  private async loadOrderRules(after: 'open' | 'refresh' = 'open'): Promise<boolean> {
+    if (!this.shopClient) return false;
+    try {
+      this.rulesRow = await fetchOrderRules(this.shopClient);
+    } catch {
+      this.toast(RULES_COPY[after === 'open' ? 'readFailed' : 'savedNotRefreshed'], 'warn');
+      return false;
+    }
+    this.forceUpdate();
+    return this.rulesRow !== null;
+  }
+
+  /** Read fresh first, so the stamp the form saves against is the current one. */
+  private openOrderRules = async (): Promise<boolean> => {
+    if (!(await this.loadOrderRules()) || !this.rulesRow) return false;
+    this.sheet('orderrules', { updatedAt: this.rulesRow.updated_at });
+    return true;
+  };
+
+  private liveOrderRulesVals(): OpsVals['liveOrderRules'] {
+    const sh = this.state.sheet as FlavourSheetState | null;
+    const r = this.rulesRow;
+    if (this.state.role !== 'owner' || sh?.kind !== 'orderrules' || !r) return null;
+    return {
+      online: this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      rules: {
+        unpaidHoldHours: r.unpaid_hold_hours,
+        maxUnpaidPerPhone: r.max_unpaid_per_phone,
+        pickupDays: [...r.pickup_days],
+        leadMinDays: r.lead_min_days,
+        leadMaxDays: r.lead_max_days,
+        pickupFromHour: r.pickup_from_hour,
+        pickupCutoffHour: r.pickup_cutoff_hour,
+        campusFrom: r.campus_from,
+        campusTo: r.campus_to,
+        campusLabel: r.campus_label ?? 'Campus'
+      },
+      save: (f: LiveOrderRulesFields) => void this.saveOrderRulesForm(f, sh.updatedAt ?? null),
+      close: () => this.closeSheet()
+    };
+  }
+
+  private async saveOrderRulesForm(
+    f: LiveOrderRulesFields,
+    expectedUpdatedAt: string | null
+  ): Promise<void> {
+    const fields = {
+      unpaid_hold_hours: f.unpaidHoldHours,
+      max_unpaid_per_phone: f.maxUnpaidPerPhone,
+      pickup_days: [...f.pickupDays].sort((a, b) => a - b),
+      lead_min_days: f.leadMinDays,
+      lead_max_days: f.leadMaxDays,
+      pickup_from_hour: f.pickupFromHour,
+      pickup_cutoff_hour: f.pickupCutoffHour,
+      campus_from: f.campusFrom.trim(),
+      campus_to: f.campusTo.trim(),
+      ...(f.campusLabel !== undefined ? { campus_label: f.campusLabel.trim() } : {})
+    };
+    const problem = orderRulesError(fields);
+    if (problem) return void this.toast(problem, 'warn');
+    if (!this.shopClient || !expectedUpdatedAt) return void this.toast(STAFF_COPY.offline, 'warn');
+    const outcome = await saveOrderRules(this.shopClient, fields, expectedUpdatedAt);
+    if (outcome === 'saved') {
+      this.toast(RULES_COPY.saved);
+      this.closeSheet();
+      await this.loadOrderRules('refresh');
+    } else if (outcome === 'conflict') {
+      this.toast(RULES_COPY.conflict, 'warn');
+      // Their version is shown by reading it again. If that read fails, the form still holds the stale values:
+      // close it rather than leave them editable (the read-failure toast stays).
+      if (
+        !(await this.openOrderRules()) &&
+        (this.state.sheet as FlavourSheetState | null)?.kind === 'orderrules'
+      )
+        this.closeSheet();
+    } else this.toast(outcome === 'refused' ? RULES_COPY.refused : STAFF_COPY.offline, 'warn');
+  }
+
+  // ------------------------------------------------------------------ B4: the boxes and add-ons form
+
+  /** `refresh` is the reload after a save: the save was acknowledged, so a failed read must not say otherwise. */
+  private async loadOrderExtras(after: 'open' | 'refresh' = 'open'): Promise<boolean> {
+    if (!this.shopClient) return false;
+    try {
+      this.extrasRow = await fetchOrderExtras(this.shopClient);
+    } catch {
+      this.toast(EXTRAS_COPY[after === 'open' ? 'readFailed' : 'savedNotRefreshed'], 'warn');
+      return false;
+    }
+    this.forceUpdate();
+    return this.extrasRow !== null;
+  }
+
+  /** Read fresh first, so the stamp the form saves against is the current one. */
+  private openOrderExtras = async (): Promise<boolean> => {
+    if (!(await this.loadOrderExtras()) || !this.extrasRow) return false;
+    this.orderExtrasSheetScope += 1;
+    this.sheet('orderextras', { updatedAt: this.extrasRow.updated_at });
+    return true;
+  };
+
+  private liveOrderExtrasVals(): OpsVals['liveOrderExtras'] {
+    const sh = this.state.sheet as FlavourSheetState | null;
+    const x = this.extrasRow;
+    if (this.state.role !== 'owner' || sh?.kind !== 'orderextras' || !x) return null;
+    const scope = this.orderExtrasSheetScope;
+    const flavourRows = this.flavourSync?.current() ?? [];
+    const sets = flavourRows
+      .filter((r) => r.item_type === 'set' && !r.archived_at)
+      .map((r) => ({ id: r.id, name: r.name }));
+    const archivedSampler = flavourRows.find((row) => row.id === x.sampler_product_id)?.archived_at;
+    if (
+      x.sampler_product_id &&
+      !archivedSampler &&
+      !sets.some((s) => s.id === x.sampler_product_id)
+    )
+      sets.push({ id: x.sampler_product_id, name: x.sampler_product_id });
+    const cookies = flavourRows
+      .filter((r) => r.item_type === 'cookie' && !r.archived_at)
+      .map((r) => ({ id: r.id, name: r.short_name || r.name, active: r.active }));
+    // A saved flavour that is no longer listed stays visible, so a save never drops it unseen.
+    for (const id of x.sampler_flavours ?? [])
+      if (!cookies.some((c) => c.id === id)) cookies.push({ id, name: id, active: false });
+    return {
+      online: this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      extras: {
+        sameDayEnabled: x.same_day_enabled,
+        sameDayPercent: x.same_day_percent,
+        sameDayOnExtras: x.same_day_on_extras,
+        samplerProductId: x.sampler_product_id ?? '',
+        samplerMaxQty: x.sampler_max_qty,
+        samplerFlavours: x.sampler_flavours ?? null,
+        boxSizes: x.box_sizes.map((b) => ({
+          size: b.size,
+          chargePesos: centavosToPesos(b.charge_cents),
+          active: b.active
+        })),
+        addOns: x.add_ons.map((a) => ({
+          id: a.id,
+          name: a.name,
+          pricePesos: centavosToPesos(a.price_cents),
+          active: a.active,
+          variants: [...a.variants],
+          textLabel: a.text_label ?? '',
+          textMax: a.text_max,
+          maxQty: a.max_qty
+        }))
+      },
+      sets,
+      cookies,
+      choiceImages: x.choice_images,
+      uploadChoicePhoto: (file: File) =>
+        this.paymentSync?.upload('flavours', file) ?? Promise.resolve(null),
+      saveWithChoiceImages: (f: LiveOrderExtrasFields, images: ChoiceImageMap) =>
+        this.saveOrderExtrasForm(f, scope, sh.updatedAt ?? null, images),
+      save: (f: LiveOrderExtrasFields) =>
+        void this.saveOrderExtrasForm(f, scope, sh.updatedAt ?? null),
+      close: () => this.closeSheet()
+    };
+  }
+
+  private saveOrderExtrasForm(
+    f: LiveOrderExtrasFields,
+    scope: number,
+    expectedUpdatedAt: string | null,
+    choiceImages?: ChoiceImageMap
+  ): Promise<void> {
+    if (
+      scope !== this.orderExtrasSheetScope ||
+      (this.state.sheet as FlavourSheetState | null)?.kind !== 'orderextras'
+    )
+      return Promise.resolve();
+    if (this.orderExtrasSave?.scope === scope) return this.orderExtrasSave.promise;
+    const promise = this.performOrderExtrasSave(f, scope, expectedUpdatedAt, choiceImages).finally(
+      () => {
+        if (this.orderExtrasSave?.promise === promise) this.orderExtrasSave = null;
+      }
+    );
+    this.orderExtrasSave = { scope, promise };
+    return promise;
+  }
+
+  private async performOrderExtrasSave(
+    f: LiveOrderExtrasFields,
+    scope: number,
+    expectedUpdatedAt: string | null,
+    choiceImages?: ChoiceImageMap
+  ): Promise<void> {
+    const numbers = [
+      f.sameDayPercent,
+      f.samplerMaxQty,
+      ...f.boxSizes.flatMap((b) => [b.size, b.chargePesos]),
+      ...f.addOns.flatMap((a) => [a.pricePesos, a.textMax, a.maxQty])
+    ];
+    if (!numbers.every((n) => Number.isFinite(n)))
+      return void this.toast(EXTRAS_COPY.refused, 'warn');
+    const taken = new Set(f.addOns.map((a) => a.id).filter(Boolean));
+    const fields: OrderExtrasFields = {
+      same_day_enabled: f.sameDayEnabled,
+      same_day_percent: f.sameDayPercent,
+      same_day_on_extras: f.sameDayOnExtras,
+      sampler_product_id: f.samplerProductId === '' ? null : f.samplerProductId,
+      sampler_max_qty: f.samplerMaxQty,
+      sampler_flavours: f.samplerFlavours ?? null,
+      box_sizes: f.boxSizes.map((b) => ({
+        size: b.size,
+        charge_cents: pesosToCentavos(b.chargePesos),
+        active: b.active
+      })),
+      add_ons: f.addOns.map((a) => {
+        const id = a.id || addOnId(a.name, taken);
+        taken.add(id);
+        return {
+          id,
+          name: a.name,
+          price_cents: pesosToCentavos(a.pricePesos),
+          active: a.active,
+          variants: a.variants,
+          text_label: a.textLabel.trim() === '' ? null : a.textLabel,
+          text_max: a.textMax,
+          max_qty: a.maxQty
+        };
+      })
+    };
+    const problem = orderExtrasError(fields);
+    if (problem) return void this.toast(problem, 'warn');
+    if (!this.shopClient || !expectedUpdatedAt) return void this.toast(STAFF_COPY.offline, 'warn');
+    const outcome =
+      choiceImages === undefined
+        ? await saveOrderExtras(this.shopClient, fields, expectedUpdatedAt)
+        : await saveOrderExtrasWithImages(this.shopClient, fields, choiceImages, expectedUpdatedAt);
+    // A closed or replaced sheet owns the request that started it. Its late response must not
+    // close a newer form, show stale conflict UI, or refresh over that form's working values.
+    if (
+      scope !== this.orderExtrasSheetScope ||
+      (this.state.sheet as FlavourSheetState | null)?.kind !== 'orderextras'
+    )
+      return;
+    if (outcome === 'saved') {
+      this.toast(EXTRAS_COPY.saved);
+      this.closeSheet();
+      await this.loadOrderExtras('refresh');
+    } else if (outcome === 'conflict') {
+      this.toast(EXTRAS_COPY.conflict, 'warn');
+      // Their version is shown by reading it again. If that read fails, the form still holds the stale values:
+      // close it rather than leave them editable (the read-failure toast stays).
+      if (
+        !(await this.openOrderExtras()) &&
+        (this.state.sheet as FlavourSheetState | null)?.kind === 'orderextras'
+      )
+        this.closeSheet();
+    } else this.toast(outcome === 'refused' ? EXTRAS_COPY.refused : STAFF_COPY.offline, 'warn');
+  }
+
+  // ------------------------------------------------------------------ D4: the owner's upcoming bazaars
+
+  /** Reads the owner's bookings (the gate calls it once the owner is verified). False when it could not. */
+  async loadScheduledEvents(client: ScheduledClient | null): Promise<boolean> {
+    if (client) this.scheduledClient = client;
+    const use = client ?? this.scheduledClient;
+    if (!isLiveMode() || !use || this.unmounted || this.gateNarrow || this.state.role !== 'owner')
+      return false;
+    const actor = this.productionActorEpoch,
+      seq = ++this.scheduledReadSeq;
+    const ownerCurrent = () =>
+      !this.unmounted &&
+      !this.gateNarrow &&
+      this.state.role === 'owner' &&
+      actor === this.productionActorEpoch &&
+      use === this.scheduledClient;
+    // A retry out replaces the failure notice with the reading line; a first read has no notice to replace.
+    const retrying = this.scheduledReadFailedActor === actor;
+    this.scheduledReading = true;
+    if (retrying) this.forceUpdate();
+    // A read that never answers must not leave "Reading your events…" for good: past the limit it counts as failed
+    // (Try again shows). It is still the same read, so a late answer may still apply and clears the failure.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = fetchScheduledEvents(use);
+    try {
+      const limit = new Promise<'slow'>((resolve) => {
+        timer = setTimeout(() => resolve('slow'), SCHEDULED_READ_LIMIT_MS);
+      });
+      const rows = await Promise.race([read, limit]);
+      if (seq === this.scheduledReadSeq) this.scheduledReading = false;
+      if (!ownerCurrent() || seq !== this.scheduledReadSeq) return false;
+      if (rows === 'slow') {
+        this.scheduledReadFailedActor = actor;
+        this.forceUpdate();
+        void read.then(
+          (late) => {
+            if (!ownerCurrent() || seq !== this.scheduledReadSeq) return;
+            this.scheduledRows = late;
+            this.scheduledReadFailedActor = null;
+            this.afterScheduledRead(use, ownerCurrent);
+          },
+          () => undefined
+        );
+        return false;
+      }
+      this.scheduledRows = rows;
+      this.scheduledReadFailedActor = null;
+    } catch {
+      if (seq === this.scheduledReadSeq) this.scheduledReading = false;
+      if (!ownerCurrent() || seq !== this.scheduledReadSeq) return false;
+      this.scheduledReadFailedActor = actor;
+      this.forceUpdate();
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+    this.afterScheduledRead(use, ownerCurrent);
+    return true;
+  }
+
+  private afterScheduledRead(use: ScheduledClient, ownerCurrent: () => boolean): void {
+    this.forceUpdate();
+    void this.retryPendingLink(use, ownerCurrent);
+    void this.confirmHeldDay(ownerCurrent);
+    // Home's next-event card must not offer a closed event: only a read of each event can say so (U4).
+    if (this.state.role === 'owner') void this.bazaarDays.readHub();
+  }
+
+  /**
+   * A start whose link to its booking was not confirmed is retried whenever the list loads. The database books the
+   * stall rent with the first link and answers a repeat harmlessly, so retrying can never book it twice.
+   */
+  private async retryPendingLink(client: ScheduledClient, current: () => boolean): Promise<void> {
+    let again = false;
+    for (const pending of readPendingLinks()) {
+      if (!current()) return;
+      const linked = await linkScheduledEvent(client, pending.scheduledId, pending.eventId);
+      if (!current()) return;
+      if (linked === 'failed') continue;
+      clearPendingLink(pending);
+      again = true;
+      if (linked === 'first') this.showRentBooked(pending.eventId, pending.rentCents, current);
+    }
+    if (again && current()) await this.loadScheduledEvents(null);
+  }
+
+  /**
+   * The database has just booked a booking's stall rent. When that event is the one on screen, the engine's local
+   * expense row shows it in the event's list and the close-out (display only, never sent: the server has it);
+   * otherwise she is only told.
+   */
+  private showRentBooked(eventId: string, rentCents: number, current: () => boolean): void {
+    if (rentCents <= 0) return;
+    // After the start has landed in the state, which is what says whether this event is the one on screen.
+    this.afterUpdate(() => {
+      if (!current()) return;
+      const event = this.state.event as LiveEvent | null;
+      if (event?.id === eventId && this.localEventExpense)
+        this.localEventExpense(SCHEDULED_COPY.rentLabel, centavosToPesos(rentCents), 'Bazaar rent');
+      else this.toast(SCHEDULED_COPY.rentBooked(peso(rentCents)));
+    });
+  }
+
+  /** U3: the "Bazaar events" sub-tab opens the events hub: the list of bookings, not an event's page, and not the form. */
+  private openBazaarEvents = (): void => {
+    if (!this.canLeaveTill()) return;
+    this.bazaarDirectory = true;
+    this.bazaarDays.reset();
+    this.go('bazaar');
+    this.forceUpdate();
+    void this.loadScheduledEvents(null);
+  };
+
+  private openScheduled = async (): Promise<void> => {
+    if (!(await this.loadScheduledEvents(null)) || !this.scheduledRows) {
+      this.toast(STAFF_COPY.offline, 'warn');
+      return;
+    }
+    this.scheduledNewId = crypto.randomUUID();
+    this.sheet('scheduledevents', {});
+  };
+
+  private liveScheduledVals(): OpsVals['liveScheduled'] {
+    const sh = this.state.sheet as FlavourSheetState | null;
+    const rows = this.scheduledRows;
+    if (this.state.role !== 'owner' || sh?.kind !== 'scheduledevents' || !rows) return null;
+    return {
+      online: this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      rows: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        startsOn: r.startsOn,
+        endsOn: r.endsOn,
+        place: r.place,
+        rentPesos: centavosToPesos(r.rentCents),
+        active: r.active,
+        started: r.started
+      })),
+      newId: this.scheduledNewId,
+      version: this.scheduledVersion,
+      save: (form: LiveScheduledRow[]) => void this.saveScheduledForm(form),
+      close: () => this.closeSheet()
+    };
+  }
+
+  /** Saves each booking that is new or changed, one at a time and each with its own stamp; stops at the first failure. */
+  private async saveScheduledForm(form: LiveScheduledRow[]): Promise<void> {
+    const client = this.scheduledClient;
+    const before = this.scheduledRows ?? [];
+    if (!client) return void this.toast(STAFF_COPY.offline, 'warn');
+    if (form.some((r) => !Number.isFinite(r.rentPesos)))
+      return void this.toast(SCHEDULED_COPY.refused, 'warn');
+    const jobs = form.flatMap((r) => {
+      const fields = {
+        id: r.id,
+        name: r.name,
+        startsOn: r.startsOn,
+        endsOn: r.endsOn,
+        place: r.place,
+        rentCents: pesosToCentavos(r.rentPesos),
+        active: r.active
+      };
+      const was = before.find((b) => b.id === r.id);
+      const same =
+        !!was &&
+        was.name === fields.name.trim() &&
+        was.startsOn === fields.startsOn &&
+        was.endsOn === fields.endsOn &&
+        was.place === fields.place.trim() &&
+        was.rentCents === fields.rentCents &&
+        was.active === fields.active;
+      return same ? [] : [{ fields, stamp: was?.updatedAt ?? null }];
+    });
+    for (const job of jobs) {
+      const problem = scheduledEventError(job.fields);
+      if (problem) return void this.toast(problem, 'warn');
+    }
+    for (const job of jobs) {
+      const outcome = await saveScheduledEvent(client, job.fields, job.stamp);
+      if (outcome === 'saved') continue;
+      await this.loadScheduledEvents(null);
+      // The blank row must not reuse an id the list now holds (a create whose reply was lost).
+      const taken = (this.scheduledRows ?? []).some((r) => r.id === this.scheduledNewId);
+      if (outcome === 'conflict' || taken) {
+        this.scheduledNewId = crypto.randomUUID();
+        this.scheduledVersion += 1;
+      }
+      if (outcome === 'conflict') {
+        this.toast(SCHEDULED_COPY.conflict, 'warn');
+        this.forceUpdate();
+      } else
+        this.toast(outcome === 'refused' ? SCHEDULED_COPY.refused : STAFF_COPY.offline, 'warn');
+      return;
+    }
+    this.toast(SCHEDULED_COPY.saved);
+    await this.loadScheduledEvents(null);
+    this.closeSheet();
+  }
+
+  // ------------------------------------------------------------------ A4: the owner's recipes
+
+  /**
+   * Reads the owner's recipes (the gate calls it once the flavour list is in: a recipe for a flavour the screens do not
+   * know is ignored). `refresh` is the flavour whose local edit the read replaces (it was just saved, or conflicted);
+   * an unsaved edit on any other flavour is kept.
+   */
+  async loadRecipes(
+    client: RecipeClient | null,
+    refresh?: string,
+    save?: {
+      submitted: RecipeState['recipes'][string];
+      current: () => boolean;
+    },
+    verifiedScope?: ProductionRecoveryScope | null
+  ): Promise<boolean> {
+    if (verifiedScope !== undefined) {
+      const scope = verifiedScope === null ? null : parseProductionScope(verifiedScope);
+      if (verifiedScope !== null && scope === null) return false;
+      const key = scope ? JSON.stringify([scope.business, scope.userId]) : null;
+      if (key !== this.recipeScopeKey) return false;
+    } else if (client && this.recipeScopeKey !== null && client !== this.recipeClient) {
+      // A new binding needs the gate's captured identity, never the identity at callback time.
+      return false;
+    }
+    if (client) this.recipeClient = client;
+    const use = client ?? this.recipeClient;
+    if (!isLiveMode() || !use) return false;
+    const seq = (this.recipeLoadSeq += 1);
+    const actor = this.productionActorEpoch;
+    const current = () =>
+      !this.unmounted &&
+      seq === this.recipeLoadSeq &&
+      actor === this.productionActorEpoch &&
+      use === this.recipeClient;
+    this.recipeReaderState = 'loading';
+    this.setState({});
+    let rows: Recipe[];
+    try {
+      rows = await fetchRecipes(use);
+    } catch {
+      if (current() && (!save || save.current())) {
+        this.recipeReaderState = 'failed';
+        this.setState({});
+      }
+      return false;
+    }
+    // A newer read started meanwhile: it will apply, an older answer must not bring back an older stamp.
+    if (!current()) return false;
+    if (save && !save.current()) return false;
+    // Anything typed before the first read was on an empty placeholder: the saved recipe replaces it.
+    const first = this.recipeRows === null;
+    const restored = new Set(this.recipeRestoredEdits);
+    this.recipeRows = rows;
+    this.recipeReaderState = 'read';
+    this.setState((s) => {
+      if (!current()) return {};
+      const raw = s as unknown as RecipeState;
+      // Only edits restored from this verified identity survive a first read; placeholders do not.
+      const state = first
+        ? {
+            ...raw,
+            recipeDirty: Object.fromEntries(
+              Object.entries(raw.recipeDirty ?? {}).filter(([id]) => restored.has(id))
+            )
+          }
+        : raw;
+      const replace =
+        save && refresh && JSON.stringify(state.recipes[refresh]) !== JSON.stringify(save.submitted)
+          ? undefined
+          : refresh;
+      for (const p of PRODUCTS)
+        if (!state.recipeDirty?.[p.id] || p.id === replace)
+          this.recipeBaseStamp[p.id] = rows.find((r) => r.productId === p.id)?.updatedAt ?? null;
+      this.recipeRestoredEdits.clear();
+      return this.recipesPatch(state, replace, first && restored.size === 0);
+    });
+    void this.loadCosts(); // a saved recipe changes what a cookie costs; a slow answer never holds this read up
+    return true;
+  }
+
+  private retireRecipeDraftSession(): void {
+    this.recipeDraftSession += 1;
+    this.recipeDraftLoadSeq += 1;
+    this.recipeDraftRows = null;
+    this.recipeDraftEditing = null;
+    this.recipeDraftLoading = false;
+    this.recipeDraftBusy = false;
+    this.recipeDraftError = null;
+  }
+
+  private async loadRecipeDrafts(session = this.recipeDraftSession): Promise<void> {
+    const isOpen = () => (this.state.sheet as { kind?: string } | null)?.kind === 'recipedrafts';
+    if (session !== this.recipeDraftSession || !isOpen()) return;
+    if (this.state.role !== 'owner' || !isLiveMode() || !this.recipeClient) {
+      this.recipeDraftError = 'Recipe drafts are available to the owner in live mode.';
+      this.setState({});
+      return;
+    }
+    const seq = ++this.recipeDraftLoadSeq;
+    const client = this.recipeClient;
+    const actor = this.productionActorEpoch;
+    const current = () =>
+      session === this.recipeDraftSession &&
+      seq === this.recipeDraftLoadSeq &&
+      actor === this.productionActorEpoch &&
+      client === this.recipeClient &&
+      isOpen() &&
+      this.state.role === 'owner';
+    this.recipeDraftLoading = true;
+    this.recipeDraftError = null;
+    this.setState({});
+    try {
+      const rows = await fetchRecipeDrafts(
+        client,
+        PRODUCTS.map((product) => product.id)
+      );
+      if (!current()) return;
+      this.recipeDraftRows = rows;
+    } catch (error) {
+      if (!current()) return;
+      this.recipeDraftError =
+        error instanceof Error ? error.message : 'Recipe drafts could not be read.';
+    } finally {
+      if (current()) {
+        this.recipeDraftLoading = false;
+        this.setState({});
+      }
+    }
+  }
+
+  private openRecipeDrafts = (): void => {
+    if (this.state.role !== 'owner' || !isLiveMode()) return;
+    const session = ++this.recipeDraftSession;
+    this.recipeDraftLoadSeq++;
+    this.recipeDraftRows = null;
+    this.recipeDraftEditing = null;
+    this.recipeDraftBusy = false;
+    this.recipeDraftLoading = false;
+    this.recipeDraftError = null;
+    this.sheet('recipedrafts', {});
+    this.afterUpdate(() => void this.loadRecipeDrafts(session));
+  };
+
+  private liveRecipeDraftsVals(): OpsVals['liveRecipeDrafts'] {
+    const sh = this.state.sheet as { kind?: string } | null;
+    if (this.state.role !== 'owner' || !isLiveMode() || sh?.kind !== 'recipedrafts') return null;
+    const session = this.recipeDraftSession;
+    const rows = this.recipeDraftRows;
+    return {
+      loading: this.recipeDraftLoading,
+      loaded: rows !== null,
+      busy: this.recipeDraftBusy,
+      error: this.recipeDraftError,
+      selectedName: this.recipeDraftEditing
+        ? (PRODUCTS.find((product) => product.id === this.recipeDraftEditing?.productId)?.name ??
+          null)
+        : null,
+      // HCB-004 a2: not gated here (recipe-drafts.test.tsx pins these rows with no catalogue read): the form draws no row
+      // and says her products are not read while they are unread.
+      rows:
+        rows === null
+          ? []
+          : PRODUCTS.map((product) => {
+              const draft = rows.find((row) => row.productId === product.id);
+              return {
+                productId: product.id,
+                name: product.name,
+                yield: draft?.yield ?? 14,
+                saved: !!draft
+              };
+            }),
+      editing: this.recipeDraftEditing,
+      open: (productId) => {
+        if (
+          session !== this.recipeDraftSession ||
+          sh?.kind !== 'recipedrafts' ||
+          !rows ||
+          this.recipeDraftBusy ||
+          !PRODUCTS.some((product) => product.id === productId)
+        )
+          return;
+        const draft = rows.find((row) => row.productId === productId);
+        this.recipeDraftEditing = {
+          productId,
+          yield: draft?.yield ?? 14,
+          sourceText: draft?.sourceText ?? '',
+          expectedUpdatedAt: draft?.updatedAt ?? null
+        };
+        this.recipeDraftError = null;
+        this.setState({});
+      },
+      save: (fields) => void this.saveRecipeDraftForm(fields, session),
+      back: () => {
+        if (session !== this.recipeDraftSession || this.recipeDraftBusy) return;
+        this.recipeDraftEditing = null;
+        this.recipeDraftError = null;
+        this.setState({});
+      },
+      reload: () => void this.loadRecipeDrafts(session),
+      close: () => {
+        if (session !== this.recipeDraftSession) return;
+        this.recipeDraftSession++;
+        this.recipeDraftLoadSeq++;
+        this.recipeDraftEditing = null;
+        this.recipeDraftRows = null;
+        this.recipeDraftLoading = false;
+        this.recipeDraftBusy = false;
+        this.recipeDraftError = null;
+        this.closeSheet();
+      }
+    };
+  }
+
+  private async saveRecipeDraftForm(
+    fields: LiveRecipeDraftEdit,
+    session = this.recipeDraftSession
+  ): Promise<void> {
+    const isOpen = () => (this.state.sheet as { kind?: string } | null)?.kind === 'recipedrafts';
+    if (
+      session !== this.recipeDraftSession ||
+      this.recipeDraftBusy ||
+      this.state.role !== 'owner' ||
+      !isLiveMode() ||
+      !this.recipeClient ||
+      !this.recipeDraftRows ||
+      !this.recipeDraftEditing ||
+      fields.productId !== this.recipeDraftEditing.productId ||
+      fields.expectedUpdatedAt !== this.recipeDraftEditing.expectedUpdatedAt
+    )
+      return;
+    const editor = this.recipeDraftEditing;
+    const client = this.recipeClient;
+    const actor = this.productionActorEpoch;
+    this.recipeDraftBusy = true;
+    this.recipeDraftError = null;
+    this.setState({});
+    const result = await saveRecipeDraft(
+      client,
+      PRODUCTS.map((product) => product.id),
+      fields
+    );
+    if (
+      session !== this.recipeDraftSession ||
+      actor !== this.productionActorEpoch ||
+      client !== this.recipeClient
+    )
+      return;
+    if (this.state.role !== 'owner' || !isOpen() || this.recipeDraftEditing !== editor) {
+      this.recipeDraftBusy = false;
+      this.setState({});
+      return;
+    }
+    if (result.outcome === 'saved' && result.updatedAt) {
+      const row: RecipeDraft = {
+        productId: fields.productId,
+        yield: fields.yield,
+        sourceText: fields.sourceText,
+        updatedAt: result.updatedAt
+      };
+      this.recipeDraftRows = [
+        ...this.recipeDraftRows.filter((item) => item.productId !== fields.productId),
+        row
+      ];
+      this.recipeDraftEditing = null;
+    } else if (result.outcome === 'conflict') {
+      this.recipeDraftError =
+        'This draft changed elsewhere. Your text is preserved; go back and reload before saving again.';
+    } else {
+      this.recipeDraftError =
+        result.error ??
+        (result.outcome === 'refused'
+          ? 'The draft was refused. Check the yield and recipe text.'
+          : 'Draft was not saved. Your text is preserved.');
+    }
+    this.recipeDraftBusy = false;
+    this.setState({});
+  }
+
+  /** The state keys the recipes screen reads: the saved recipe for each flavour, or an empty one, never the prototype's. */
+  private recipesPatch(
+    s: RecipeState,
+    refresh?: string,
+    discardEdits = false
+  ): Record<string, unknown> {
+    // With no read yet (a helper, or a read that failed) the screens still get empty recipes, never the prototype's.
+    const mapped = engineRecipes(
+      this.recipeRows ?? [],
+      PRODUCTS.map((p) => p.id)
+    );
+    const dirty: Record<string, boolean> = {};
+    const recipes = { ...mapped.recipes } as Record<string, unknown>;
+    for (const pid of Object.keys(mapped.recipes)) {
+      if (!discardEdits && s.recipeDirty?.[pid] && pid !== refresh && s.recipes?.[pid]) {
+        recipes[pid] = s.recipes[pid];
+        dirty[pid] = true;
+      }
+    }
+    return {
+      recipes,
+      recipeBase: mapped.recipeBase,
+      recipeVer: mapped.recipeVer,
+      recipeHistory: mapped.recipeHistory,
+      recipeDirty: dirty
+    };
+  }
+
+  /** The ported "Save" on a recipe: the database makes the new version; the screen then shows what it holds. */
+  private async liveRecipeSave(pid: string): Promise<void> {
+    const client = this.recipeClient;
+    const r = (this.state as unknown as RecipeState).recipes[pid];
+    if (!r) return;
+    const blank = r.ing.filter((i) => !String(i[0]).trim()).length;
+    if (blank)
+      return void this.toast(
+        plural(blank, 'ingredient still has', 'ingredients still have') + ' no name.',
+        'warn'
+      );
+    if (this.state.role !== 'owner' || !client || !this.recipeRows)
+      return void this.toast(STAFF_COPY.offline, 'warn');
+    const actor = this.productionActorEpoch;
+    const current = () =>
+      !this.unmounted &&
+      this.state.role === 'owner' &&
+      actor === this.productionActorEpoch &&
+      client === this.recipeClient;
+    const key = `${actor}:${pid}`;
+    if (this.recipeSaving.has(key)) return;
+    const submitted = structuredClone(r);
+    const fields = {
+      productId: pid,
+      yield: r.yield,
+      lines: r.ing.map((i) => ({
+        name: String(i[0]).trim(),
+        qty: Number(i[1]),
+        unit: String(i[2]),
+        ...(i[3] === undefined ? {} : { kind: i[3] })
+      }))
+    };
+    const problem = recipeError(fields);
+    if (problem) return void this.toast(problem, 'warn');
+    const was = this.recipeRows.find((x) => x.productId === pid);
+    this.recipeSaving.add(key);
+    try {
+      // Against the stamp this edit was started on, never a newer one read since: if the recipe moved meanwhile, the
+      // database says so (a conflict) instead of being overwritten.
+      const { outcome, version, updatedAt } = await saveRecipe(
+        client,
+        fields,
+        this.recipeBaseStamp[pid] ?? null
+      );
+      if (!current()) return;
+      if (outcome === 'saved' && updatedAt) this.recipeBaseStamp[pid] = updatedAt;
+      // A saved recipe, or another person's newer one, replaces this edit; a refusal or a lost connection keeps it.
+      const read = await this.loadRecipes(
+        null,
+        outcome === 'saved' || outcome === 'conflict' ? pid : undefined,
+        { submitted, current }
+      );
+      if (!current()) return;
+      if (outcome === 'saved') {
+        if (!read && version !== null && updatedAt) {
+          // The read after the save failed: the answer to the save is enough to show it saved and to save again.
+          const acknowledged: Recipe = {
+            ...fields,
+            version,
+            updatedAt,
+            history: !was
+              ? []
+              : version === was.version
+                ? was.history
+                : [...was.history, { version: was.version, yield: was.yield, lines: was.lines }]
+          };
+          this.recipeRows = [
+            ...(this.recipeRows ?? []).filter((row) => row.productId !== pid),
+            acknowledged
+          ];
+          this.setState((s) => {
+            const state = s as unknown as RecipeState;
+            const replace =
+              JSON.stringify(state.recipes[pid]) === JSON.stringify(submitted) ? pid : undefined;
+            return this.recipesPatch(state, replace);
+          });
+        }
+        this.toast(
+          !was
+            ? RECIPE_COPY.created
+            : version !== null && version === was.version
+              ? RECIPE_COPY.unchanged
+              : RECIPE_COPY.saved(version ?? 0)
+        );
+      } else if (outcome === 'conflict') this.toast(RECIPE_COPY.conflict, 'warn');
+      else this.toast(outcome === 'refused' ? RECIPE_COPY.refused : RECIPE_COPY.unknown, 'warn');
+    } finally {
+      this.recipeSaving.delete(key);
+    }
+  }
+
+  // ------------------------------------------------------------------ A3: the owner's stock catalogue
+
+  private stockReadView(): OpsVals['liveStockRead'] {
+    if (this.state.role !== 'owner') return undefined;
+    const actor = this.productionActorEpoch,
+      generation = this.productionRecovery.generation,
+      client = this.stockClient;
+    return {
+      state: this.stockReadState,
+      stale: this.stockCatalogue !== null && this.stockReadState !== 'ready',
+      retry: () => {
+        if (
+          !this.unmounted &&
+          this.state.role === 'owner' &&
+          actor === this.productionActorEpoch &&
+          generation === this.productionRecovery.generation &&
+          client === this.stockClient
+        )
+          void this.loadStockCatalogue(client);
+      }
+    };
+  }
+
+  /** Clear source-specific projections without discarding unfinished stock movements or counts. */
+  private retireStockRead(): void {
+    this.stockLoadSeq += 1;
+    this.stockReadState = 'idle';
+    this.stockCatalogue = null;
+    this.costLoadSeq += 1;
+    this.costReads = 'failed';
+    this.itemCosts = null;
+    this.recipeCosts = new Map();
+    this.movementTokens.clear();
+    this.movementReads.clear();
+    fillLiveCatalogue(null);
+    this.setState({
+      inv: [],
+      paid: {},
+      liveStockOpen: null,
+      liveStockPriceOpen: false,
+      liveStockReturn: null
+    } as never);
+  }
+
+  /** Reads the owner's catalogue. Only the latest read from this verified actor and client may apply. */
+  async loadStockCatalogue(client: StockClient | null): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted) return false;
+    if (client && client !== this.stockClient) {
+      this.retireStockRead();
+      this.stockClient = client;
+    }
+    const use = client ?? this.stockClient;
+    const seq = ++this.stockLoadSeq,
+      actor = this.productionActorEpoch,
+      generation = this.productionRecovery.generation,
+      role = this.state.role;
+    const latest = () =>
+      !this.unmounted &&
+      seq === this.stockLoadSeq &&
+      role === this.state.role &&
+      use === this.stockClient;
+    const current = () =>
+      latest() &&
+      actor === this.productionActorEpoch &&
+      generation === this.productionRecovery.generation;
+    const unavailable = () => {
+      if (latest()) {
+        this.stockReadState = 'failed';
+        this.forceUpdate();
+      }
+    };
+    this.stockReadState = 'loading';
+    this.costLoadSeq += 1;
+    this.forceUpdate();
+    try {
+      if (!use) throw new Error('stock source unavailable');
+      const catalogue = await fetchStockCatalogue(use);
+      if (!current()) {
+        unavailable();
+        return false;
+      }
+      this.stockCatalogue = catalogue;
+    } catch {
+      unavailable();
+      return false;
+    }
+    this.stockReadState = 'ready';
+    this.applyStockCatalogue();
+    if (this.state.role === 'owner' && (await this.takeCountOwnership()) && current())
+      this.restoreCountRecovery();
+    if (!current()) {
+      unavailable();
+      return false;
+    }
+    // B5-1: a movement or a reload may have changed an item's history; the open page reads it again.
+    this.refreshMovements();
+    // What was last paid for each item, which the cost per unit is worked out from (a failed read leaves what was there).
+    try {
+      const paid = enginePaid(await fetchLastPaid(use as LedgerClient));
+      if (!current()) {
+        unavailable();
+        return false;
+      }
+      this.setState({ paid });
+    } catch {
+      /* the catalogue's own best-buy prices stand in */
+    }
+    if (!current()) {
+      unavailable();
+      return false;
+    }
+    void this.loadCosts(); // a stock movement or a price changes what an item and a cookie cost
+    return true;
+  }
+
+  // ------------------------------------------------------------------ B3b-2: what things cost
+
+  /**
+   * Reads the database's cost of every item and recipe (owner only: it refuses anyone else), after anything that changes a cost: a
+   * stock movement, a delivery, a price, a saved recipe, production. If either function is missing (a database before B3b) the
+   * whole read is `missing` and the engine's own path stands. A failed read is not kept as a cost: it is unknown. Never throws.
+   */
+  async loadCosts(): Promise<void> {
+    const use = (this.stockClient ?? this.recipeClient) as CostsClient | null;
+    if (!isLiveMode() || !use || this.state.role !== 'owner') return;
+    const seq = (this.costLoadSeq += 1);
+    const actor = this.productionActorEpoch,
+      generation = this.productionRecovery.generation;
+    const [items, recipes] = await Promise.all([fetchItemCosts(use), fetchRecipeCosts(use)]);
+    // A newer read started meanwhile: it will apply, an older answer must not bring back an older cost.
+    if (
+      seq !== this.costLoadSeq ||
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      actor !== this.productionActorEpoch ||
+      generation !== this.productionRecovery.generation ||
+      use !== (this.stockClient ?? this.recipeClient)
+    )
+      return;
+    if (items.status === 'ok' && recipes.status === 'ok') {
+      this.costReads = 'ok';
+      this.itemCosts = items;
+      this.recipeCosts = recipes.byProduct;
+    } else {
+      this.costReads =
+        items.status === 'missing' || recipes.status === 'missing' ? 'missing' : 'failed';
+      this.itemCosts = null;
+      this.recipeCosts = new Map();
+    }
+    this.setState({});
+  }
+
+  /** Whether a cost is the database's: the owner, once a cost function exists. Anyone else, or an older database, keeps the engine's own path. */
+  private costsFromDatabase(): boolean {
+    return this.state.role === 'owner' && this.costReads !== 'missing';
+  }
+
+  /** A recipe's cost row, only when it is known: complete and not being edited (the database costs the saved recipe). */
+  private knownRecipeCost(pid: string | undefined): RecipeCost | null {
+    if (this.costReads !== 'ok' || !pid) return null;
+    if ((this.state.recipeDirty as Record<string, boolean> | undefined)?.[pid]) return null;
+    const row = this.recipeCosts.get(pid);
+    // The cost is of one saved version; once the recipe has moved on it is not this recipe's cost until the read catches up.
+    const saved = this.recipeRows?.find((r) => r.productId === pid)?.version;
+    return row?.complete && saved !== undefined && row.version === saved ? row : null;
+  }
+
+  private installCostOverrides(): void {
+    const e = this as unknown as CostActions;
+    const keep = {
+      costPerUnit: e.costPerUnit,
+      ingCost: e.ingCost,
+      packCostPerCookie: e.packCostPerCookie,
+      unitCost: e.unitCost
+    };
+    this.engineCost = keep;
+    e.costPerUnit = (name) => {
+      this.capturePackNames?.push(name);
+      if (!this.costsFromDatabase()) return keep.costPerUnit(name);
+      const cost = this.costReads === 'ok' ? this.itemCosts?.byName.get(name) : null;
+      return cost ?? NaN;
+    };
+    e.ingCost = (pid) =>
+      this.costsFromDatabase()
+        ? (this.knownRecipeCost(pid)?.ingredientPerCookie ?? NaN)
+        : keep.ingCost(pid);
+    // The engine's takes no flavour and spreads three named items over six; the database costs each recipe's own packaging lines.
+    e.packCostPerCookie = (pid) =>
+      this.costsFromDatabase()
+        ? (this.knownRecipeCost(pid)?.packagingPerCookie ?? NaN)
+        : keep.packCostPerCookie();
+    e.unitCost = (pid) => {
+      if (!this.costsFromDatabase()) return keep.unitCost(pid);
+      const perCookie = this.knownRecipeCost(pid)?.perCookie;
+      return perCookie == null ? NaN : Math.round(perCookie * 100) / 100;
+    };
+  }
+
+  /** A flavour's cost per cookie in pesos, or null when it is not known. */
+  private cookieCost(pid: string): number | null {
+    const cost = (this as unknown as CostActions).unitCost(pid);
+    return Number.isFinite(cost) ? cost : null;
+  }
+
+  /**
+   * The inventory rows go into state; the suppliers, pack sizes and best buys go into the engine's own constants,
+   * which nothing in state reaches (see engine-catalogue.ts). The suppliers screen opens on a supplier that exists.
+   */
+  private applyStockCatalogue(): void {
+    const c = this.stockCatalogue;
+    if (!c) return;
+    fillLiveCatalogue(c);
+    const first = firstSupplierName();
+    // The database's quantities always win: every change of a quantity is a movement (C1).
+    this.setState((s) => ({
+      inv: engineInventory(c),
+      supplierOpen: currentSuppliers().some((x) => x.name === s.supplierOpen)
+        ? s.supplierOpen
+        : first
+    }));
+  }
+
+  private openStockItems = async (): Promise<void> => {
+    if (!(await this.loadStockCatalogue(null)) || !this.stockCatalogue) {
+      this.toast(STAFF_COPY.offline, 'warn');
+      return;
+    }
+    this.sheet('stockitems', {});
+  };
+
+  private openStockSuppliers = async (): Promise<void> => {
+    if (!(await this.loadStockCatalogue(null)) || !this.stockCatalogue) {
+      this.toast(STAFF_COPY.offline, 'warn');
+      return;
+    }
+    this.sheet('stocksuppliers', {});
+  };
+
+  private stockOnline(): boolean {
+    return this.state.online && (typeof navigator === 'undefined' || navigator.onLine);
+  }
+
+  /** The item form was opened from a page, not from the list of items. */
+  private stockFormFromPage = false;
+
+  private addStockItem = (): void => {
+    if (!isLiveMode() || this.state.role !== 'owner' || !this.stockCatalogue) return;
+    this.stockNewId = crypto.randomUUID();
+    // Opened from the page, not from the list of items: Save and Back return to the page.
+    this.stockFormFromPage = (this.state.sheet as StockSheetState | null)?.kind !== 'stockitems';
+    this.sheet('stockitems', { isNew: true });
+  };
+
+  private liveStockItemsVals(): OpsVals['liveStockItems'] {
+    const sh = this.state.sheet as StockSheetState | null;
+    const c = this.stockCatalogue;
+    if (this.state.role !== 'owner' || sh?.kind !== 'stockitems' || !c) return null;
+    const names = new Map(c.suppliers.map((s) => [s.id, s.name]));
+    const found = sh.id ? c.items.find((i) => i.id === sh.id) : undefined;
+    let editing: LiveStockItemEdit | null = null;
+    if (sh.isNew)
+      editing = {
+        id: this.stockNewId,
+        isNew: true,
+        name: '',
+        category: 'Ingredients',
+        unit: 'g',
+        parLevel: 0,
+        packSize: null,
+        packLabel: '',
+        supplierId: null,
+        useByDays: null,
+        active: true
+      };
+    else if (found)
+      editing = {
+        id: found.id,
+        isNew: false,
+        name: found.name,
+        category: found.category,
+        unit: found.unit,
+        parLevel: found.parLevel,
+        packSize: found.packSize,
+        packLabel: found.packLabel,
+        supplierId: found.supplierId,
+        useByDays: found.useByDays,
+        active: found.active
+      };
+    return {
+      online: this.stockOnline(),
+      rows: c.items.map((i) => ({
+        id: i.id,
+        name: i.name,
+        category: i.category,
+        unit: i.unit,
+        supplierName: (i.supplierId && names.get(i.supplierId)) || 'No supplier',
+        active: i.active
+      })),
+      editing,
+      suppliers: c.suppliers.filter((s) => s.active).map((s) => ({ id: s.id, name: s.name })),
+      version: this.stockVersion,
+      add: this.addStockItem,
+      edit: (id) => this.sheet('stockitems', { id }),
+      save: (f) => void this.saveStockItemForm(f),
+      back: () => (this.stockFormFromPage ? this.closeSheet() : this.sheet('stockitems', {})),
+      fromPage: this.stockFormFromPage,
+      close: () => this.closeSheet()
+    };
+  }
+
+  private editStockSupplier(id?: string, itemId?: string, priceId?: string): void {
+    const c = this.stockCatalogue;
+    if (!isLiveMode() || this.unmounted || this.state.role !== 'owner' || !c) return;
+    const item = itemId ? c.items.find((row) => row.id === itemId) : undefined;
+    const supplier = id ? c.suppliers.find((row) => row.id === id) : undefined;
+    if (
+      (id && !supplier) ||
+      (itemId &&
+        (!item?.active ||
+          this.state.screen !== 'inventory' ||
+          this.state.liveStockOpen !== itemId)) ||
+      (priceId &&
+        !c.prices.some(
+          (row) => row.id === priceId && row.supplierId === id && row.itemName === item?.name
+        ))
+    ) {
+      this.toast('This item or supplier changed. Reopen its prices before editing.', 'warn');
+      return;
+    }
+    this.stockNewPriceId = crypto.randomUUID();
+    if (!id) this.stockNewId = crypto.randomUUID();
+    this.sheet('stocksuppliers', {
+      id: id ?? this.stockNewId,
+      isNew: !id,
+      itemId,
+      itemName: item?.name,
+      itemDefinition: item
+        ? JSON.stringify([item.name, item.unit, item.packSize, item.packLabel])
+        : undefined,
+      priceId,
+      addPrice: !!itemId && !priceId,
+      supplierStamp: supplier?.updatedAt,
+      priceStamps: itemId
+        ? Object.fromEntries(
+            c.prices.filter((row) => row.supplierId === id).map((row) => [row.id, row.updatedAt])
+          )
+        : undefined
+    });
+  }
+
+  private itemPriceContextCurrent(sheet: StockSheetState): boolean {
+    const item = this.stockCatalogue?.items.find((row) => row.id === sheet.itemId);
+    return (
+      this.state.screen === 'inventory' &&
+      this.state.liveStockOpen === sheet.itemId &&
+      item?.active === true &&
+      item.name === sheet.itemName &&
+      JSON.stringify([item.name, item.unit, item.packSize, item.packLabel]) === sheet.itemDefinition
+    );
+  }
+
+  private itemPriceEditorCurrent(sheet: StockSheetState): boolean {
+    if (!this.itemPriceContextCurrent(sheet)) return false;
+    const supplier = this.stockCatalogue?.suppliers.find((row) => row.id === sheet.id);
+    if (sheet.isNew) return !supplier;
+    if (!supplier || supplier.updatedAt !== sheet.supplierStamp) return false;
+    const prices = this.stockCatalogue?.prices.filter((row) => row.supplierId === sheet.id) ?? [];
+    const stamps = sheet.priceStamps ?? {};
+    return (
+      prices.length === Object.keys(stamps).length &&
+      prices.every((row) => stamps[row.id] === row.updatedAt)
+    );
+  }
+
+  /** Accepts only what this very save wrote; anyone else's change still makes the editor refuse. */
+  private restampItemPriceEditor(
+    sheet: StockSheetState,
+    savedSupplier: boolean,
+    savedPrices: readonly string[]
+  ): void {
+    if (!savedSupplier && !savedPrices.length) return;
+    const c = this.stockCatalogue;
+    const supplierStamp = savedSupplier
+      ? c?.suppliers.find((row) => row.id === sheet.id)?.updatedAt
+      : sheet.supplierStamp;
+    const priceStamps = { ...(sheet.priceStamps ?? {}) };
+    for (const id of savedPrices) {
+      const stamp = c?.prices.find((row) => row.id === id)?.updatedAt;
+      if (stamp) priceStamps[id] = stamp;
+    }
+    this.setState({ sheet: { ...sheet, isNew: false, supplierStamp, priceStamps } } as never);
+  }
+
+  private preferredPriceSupplier(item: StockItem | undefined): string | undefined {
+    const c = this.stockCatalogue;
+    if (!c || !item) return undefined;
+    const primary = c.suppliers.find((row) => row.id === item.supplierId && row.active);
+    if (primary) return primary.id;
+    const preferred = new Set(
+      c.prices
+        .filter(
+          (row) =>
+            row.itemName === item.name &&
+            row.active &&
+            row.preferred &&
+            c.suppliers.some((supplier) => supplier.id === row.supplierId && supplier.active)
+        )
+        .map((row) => row.supplierId)
+    );
+    return preferred.size === 1 ? [...preferred][0] : undefined;
+  }
+
+  private openItemPriceEditor(id: string, choose = false): void {
+    const item = this.stockCatalogue?.items.find((row) => row.id === id);
+    if (
+      !isLiveMode() ||
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      !item?.active ||
+      this.state.liveStockOpen !== id ||
+      this.state.screen !== 'inventory'
+    )
+      return;
+    const supplier = choose ? undefined : this.preferredPriceSupplier(item);
+    if (supplier) this.editStockSupplier(supplier, id);
+    else this.sheet('stocksuppliers', { itemId: id, itemName: item.name, addPrice: true });
+  }
+
+  private liveStockSuppliersVals(forDirectory = false): OpsVals['liveStockSuppliers'] {
+    const sheet = this.state.sheet as StockSheetState | null;
+    const sh = !forDirectory && sheet?.kind === 'stocksuppliers' ? sheet : null;
+    const c = this.stockCatalogue;
+    if (
+      !isLiveMode() ||
+      this.state.role !== 'owner' ||
+      !c ||
+      (forDirectory ? this.state.screen !== 'suppliers' : !sh)
+    )
+      return null;
+    const found = sh?.id ? c.suppliers.find((s) => s.id === sh.id) : undefined;
+    const context = sh?.itemId ? c.items.find((row) => row.id === sh.itemId) : undefined;
+    const pesos = (cents: number) => '₱' + centavosToPesos(cents).toLocaleString('en-PH');
+    const pricesFor = (id: string): LiveStockPriceRow[] =>
+      c.prices
+        .filter((p) => p.supplierId === id)
+        .map((p) => ({
+          id: p.id,
+          itemName: p.itemName,
+          packLabel: p.packLabel,
+          pricePesos: centavosToPesos(p.priceCents),
+          lastBought: p.lastBought,
+          preferred: p.preferred,
+          active: p.active,
+          previousText: p.previousCents.length
+            ? 'Before: ' + p.previousCents.map(pesos).join(', ')
+            : 'First price'
+        }));
+    const edit = (id?: string) => {
+      if (!sh?.itemId || this.state.sheet === sh) this.editStockSupplier(id, sh?.itemId);
+    };
+    let editing: LiveStockSupplierEdit | null = null;
+    if (sh?.isNew)
+      editing = {
+        id: this.stockNewId,
+        isNew: true,
+        name: '',
+        phone: '',
+        notes: '',
+        place: '',
+        active: true,
+        prices: [],
+        newPriceId: this.stockNewPriceId
+      };
+    else if (found)
+      editing = {
+        id: found.id,
+        isNew: false,
+        name: found.name,
+        phone: found.phone,
+        notes: found.notes,
+        place: found.place,
+        active: found.active,
+        prices: pricesFor(found.id).sort(
+          (a, b) => Number(b.itemName === context?.name) - Number(a.itemName === context?.name)
+        ),
+        newPriceId: this.stockNewPriceId,
+        newPriceDefaults: context?.active
+          ? { itemName: context.name, packLabel: context.packLabel.trim() }
+          : undefined,
+        focusNewPrice: sh?.addPrice,
+        focusPriceId: sh?.priceId
+      };
+    return {
+      itemContextName: context?.name,
+      online: this.stockOnline(),
+      rows: c.suppliers.map((s) => ({
+        id: s.id,
+        name: s.name,
+        place: s.place,
+        priceCount: c.prices.filter((p) => p.supplierId === s.id && p.active).length,
+        active: s.active,
+        phone: s.phone,
+        notes: s.notes,
+        prices: pricesFor(s.id)
+      })),
+      editing,
+      itemNames: c.items.filter((i) => i.active).map((i) => i.name),
+      version: this.stockVersion,
+      add: () => edit(),
+      edit,
+      save: (f) => {
+        if (sh && this.state.sheet === sh && editing && editing.id === f.id)
+          void this.saveStockSupplierForm(f);
+      },
+      backLabel: sh?.itemId
+        ? 'Back to item prices'
+        : this.state.screen === 'suppliers'
+          ? editing?.isNew
+            ? 'Back to suppliers'
+            : 'Back to supplier'
+          : undefined,
+      back: () => {
+        if (sh && this.state.sheet !== sh) return;
+        if (sh?.itemId || this.state.screen === 'suppliers') this.closeSheet();
+        else this.sheet('stocksuppliers', {});
+      },
+      close: () => this.closeSheet()
+    };
+  }
+
+  /** After a save: on success the list is re-read and shown; otherwise the list is re-read and she is told why. */
+  private async finishStockSave(
+    outcome: SaveOutcome,
+    kind: 'stockitems' | 'stocksuppliers',
+    refused: string,
+    originSheet?: StockSheetState | null
+  ): Promise<void> {
+    await this.loadStockCatalogue(null);
+    if (kind === 'stocksuppliers' && originSheet !== undefined && this.state.sheet !== originSheet)
+      return;
+    if (outcome === 'saved') {
+      this.toast(STOCK_COPY.saved);
+      if (
+        kind === 'stocksuppliers' &&
+        originSheet?.itemId &&
+        originSheet.isNew &&
+        this.itemPriceContextCurrent(originSheet) &&
+        this.stockCatalogue?.suppliers.some((row) => row.id === originSheet.id && row.active)
+      ) {
+        this.editStockSupplier(originSheet.id, originSheet.itemId);
+      } else if (
+        kind === 'stocksuppliers' &&
+        (this.state.screen === 'suppliers' || originSheet?.itemId)
+      ) {
+        if ((this.state.sheet as StockSheetState | null)?.kind === kind) this.closeSheet();
+      } else if (kind === 'stockitems' && this.stockFormFromPage) {
+        this.closeSheet();
+      } else this.sheet(kind, {});
+      return;
+    }
+    // A price create whose reply was lost is saved: the blank price row must not reuse its id (it would overwrite
+    // that price). A new item or supplier keeps its id, so an identical retry is answered, not duplicated; only a
+    // different body under a saved id (a conflict) gets a fresh one.
+    const c = this.stockCatalogue;
+    const takenPrice = !!c && c.prices.some((p) => p.id === this.stockNewPriceId);
+    if (takenPrice) this.stockNewPriceId = crypto.randomUUID();
+    const takenNew =
+      !!c &&
+      (c.items.some((i) => i.id === this.stockNewId) ||
+        c.suppliers.some((x) => x.id === this.stockNewId));
+    if (takenNew && outcome === 'conflict') this.stockNewId = crypto.randomUUID();
+    if (takenPrice || outcome === 'conflict') this.stockVersion += 1;
+    if (outcome === 'conflict') {
+      this.toast(STOCK_COPY.conflict, 'warn');
+      this.forceUpdate();
+    } else this.toast(outcome === 'refused' ? refused : STAFF_COPY.offline, 'warn');
+  }
+
+  private async saveStockItemForm(f: LiveStockItemEdit): Promise<void> {
+    const client = this.stockClient;
+    const c = this.stockCatalogue;
+    if (!client || !c) return void this.toast(STAFF_COPY.offline, 'warn');
+    const fields: ItemFields = {
+      id: f.id,
+      name: f.name,
+      category: f.category,
+      unit: f.unit,
+      parLevel: f.parLevel,
+      packSize: f.packSize,
+      packLabel: f.packLabel,
+      supplierId: f.supplierId,
+      useByDays: f.useByDays,
+      active: f.active
+    };
+    const problem = itemError(fields);
+    if (problem) return void this.toast(problem, 'warn');
+    const was = c.items.find((i) => i.id === f.id);
+    const outcome = await saveStockItem(client, fields, was?.updatedAt ?? null);
+    await this.finishStockSave(outcome, 'stockitems', STOCK_COPY.refusedItem);
+  }
+
+  /** The supplier, then each new or changed price, one at a time and each with its own stamp; stops at the first failure. */
+  private async saveStockSupplierForm(f: LiveStockSupplierEdit): Promise<void> {
+    const originSheet = this.state.sheet as StockSheetState | null;
+    if (!isLiveMode() || this.unmounted || this.state.role !== 'owner') return;
+    if (originSheet?.itemId && !this.itemPriceEditorCurrent(originSheet))
+      return void this.toast(
+        'This item or its supplier prices changed. Reopen its prices before saving.',
+        'warn'
+      );
+    const client = this.stockClient;
+    const c = this.stockCatalogue;
+    if (!client || !c) return void this.toast(STAFF_COPY.offline, 'warn');
+    const supplier = {
+      id: f.id,
+      name: f.name,
+      phone: f.phone,
+      notes: f.notes,
+      place: f.place,
+      active: f.active
+    };
+    const problem = supplierError(supplier);
+    if (problem) return void this.toast(problem, 'warn');
+    if (f.prices.some((r) => !Number.isFinite(r.pricePesos)))
+      return void this.toast(STOCK_COPY.refusedSupplier, 'warn');
+    const priceJobs: Array<{ fields: PriceFields; stamp: string | null }> = [];
+    for (const r of f.prices) {
+      const fields: PriceFields = {
+        id: r.id,
+        supplierId: f.id,
+        itemName: r.itemName,
+        packLabel: r.packLabel,
+        priceCents: pesosToCentavos(r.pricePesos),
+        lastBought: r.lastBought,
+        preferred: r.preferred,
+        active: r.active
+      };
+      const bad = priceError(fields);
+      if (bad) return void this.toast(bad, 'warn');
+      const was = c.prices.find((p) => p.id === r.id);
+      const same =
+        !!was &&
+        was.itemName === fields.itemName.trim() &&
+        was.packLabel === fields.packLabel.trim() &&
+        was.priceCents === fields.priceCents &&
+        was.lastBought === fields.lastBought.trim() &&
+        was.preferred === fields.preferred &&
+        was.active === fields.active;
+      if (!same) priceJobs.push({ fields, stamp: was?.updatedAt ?? null });
+    }
+    const wasSupplier = c.suppliers.find((s) => s.id === f.id);
+    const supplierSame =
+      !!wasSupplier &&
+      wasSupplier.name === supplier.name.trim() &&
+      wasSupplier.phone === supplier.phone.trim() &&
+      wasSupplier.notes === supplier.notes.trim() &&
+      wasSupplier.place === supplier.place.trim() &&
+      wasSupplier.active === supplier.active;
+    if (supplierSame && !priceJobs.length) {
+      // Opened to add this item's price and none was typed: stay, so what was meant is not lost.
+      if (originSheet?.itemId && !f.prices.some((row) => row.itemName === originSheet.itemName))
+        return void this.toast('No changes to save. Enter a price to add one.', 'warn');
+      this.toast('No changes to save.');
+      if (originSheet?.itemId || this.state.screen === 'suppliers') this.closeSheet();
+      else this.sheet('stocksuppliers', {});
+      return;
+    }
+    // What this save has done so far: a later failure must not make the retry look like someone else's change.
+    let savedSupplier = false;
+    const savedPrices: string[] = [];
+    const stopped = async (outcome: SaveOutcome) => {
+      await this.finishStockSave(
+        outcome,
+        'stocksuppliers',
+        STOCK_COPY.refusedSupplier,
+        originSheet
+      );
+      if (originSheet?.itemId && this.state.sheet === originSheet)
+        this.restampItemPriceEditor(originSheet, savedSupplier, savedPrices);
+    };
+    if (!supplierSame) {
+      const outcome = await saveSupplier(client, supplier, wasSupplier?.updatedAt ?? null);
+      if (outcome !== 'saved') return void (await stopped(outcome));
+      savedSupplier = true;
+    }
+    for (const job of priceJobs) {
+      const outcome = await saveSupplierPrice(client, job.fields, job.stamp);
+      if (outcome !== 'saved') return void (await stopped(outcome));
+      savedPrices.push(job.fields.id);
+    }
+    await this.finishStockSave('saved', 'stocksuppliers', STOCK_COPY.refusedSupplier, originSheet);
+  }
+
+  /** The ported "Add item" sheet: the item is created in the catalogue. Its quantity is not kept (stock ledger, C1). */
+  private async liveAddInv(
+    cat: string,
+    name: string,
+    qty: unknown,
+    unit: string,
+    level: unknown,
+    supplier: string
+  ): Promise<void> {
+    const client = this.stockClient;
+    const c = this.stockCatalogue;
+    if (this.state.role !== 'owner' || !client || !c)
+      return void this.toast(STAFF_COPY.offline, 'warn');
+    const sup = c.suppliers.find((s) => s.active && s.name === supplier);
+    const fields: ItemFields = {
+      id: crypto.randomUUID(),
+      name: String(name ?? '').trim(),
+      category: cat === 'Packaging' ? 'Packaging' : 'Ingredients',
+      unit: String(unit || 'g').trim(),
+      parLevel: Number(level) || 0,
+      packSize: null,
+      packLabel: '',
+      supplierId: sup?.id ?? null,
+      useByDays: null,
+      active: true
+    };
+    const problem = itemError(fields);
+    if (problem) return void this.toast(problem, 'warn');
+    const outcome = await saveStockItem(client, fields, null);
+    if (outcome !== 'saved') {
+      return void this.toast(
+        outcome === 'refused' ? STOCK_COPY.refusedItem : STAFF_COPY.offline,
+        'warn'
+      );
+    }
+    const opening =
+      Number(qty) > 0
+        ? await this.recordMovement(fields.id, 'opening', Number(qty), null, '', '')
+        : true;
+    await this.loadStockCatalogue(null);
+    this.setState({ sheet: null });
+    if (opening) this.toast(fields.name + ' added to ' + fields.category + '.');
+    else this.toast(STOCK_COPY.itemAddedNoOpening, 'warn');
+  }
+
+  // ------------------------------------------------------------------ C1: the stock ledger
+
+  /** The engine's toasts offer an Undo that would change only this screen; a stock change is a movement, so none is offered. */
+  private withoutUndo(fn: () => void): void {
+    const original = this.toast;
+    this.toast = (message: string, tone?: 'ok' | 'warn') => original(message, tone);
+    try {
+      fn();
+    } finally {
+      this.toast = original;
+    }
+  }
+
+  private stockItem(name: string) {
+    return this.stockCatalogue?.items.find((i) => i.active && i.name === name);
+  }
+
+  /**
+   * Records one movement and, whatever happens, re-reads the catalogue so the screen shows what the database holds.
+   * Returns whether it was saved; if not, she is told nothing changed.
+   */
+  private async recordMovement(
+    itemId: string,
+    kind: MovementFields['kind'],
+    qty: number,
+    costCents: number | null,
+    supplier: string,
+    reason: string,
+    at?: number
+  ): Promise<boolean> {
+    const client = this.stockClient as LedgerClient | null;
+    if (this.state.role !== 'owner') {
+      this.toast(STOCK_COPY.ownerOnly, 'warn');
+      return false;
+    }
+    if (!client) {
+      this.toast(STAFF_COPY.offline, 'warn');
+      return false;
+    }
+    const rounded = Math.round(qty * 1000) / 1000;
+    // The same entry repeated after an unconfirmed answer is the same movement (same id, same time), never a second one.
+    const signature = [itemId, kind, rounded, costCents, supplier.trim(), reason.trim()].join('|');
+    const fields: MovementFields = this.pendingMovements.get(signature) ?? {
+      id: crypto.randomUUID(),
+      itemId,
+      kind,
+      qty: rounded,
+      costCents,
+      supplier,
+      reason,
+      at: at ?? Date.now()
+    };
+    const wasPending = this.pendingMovements.has(signature);
+    if (
+      kind === 'count' &&
+      (this.unmounted || (this.countRecoveryBusy && fields.id !== this.recoveringCountId))
+    )
+      return false;
+    const problem = movementError(fields);
+    if (problem) {
+      this.toast(problem, 'warn');
+      await this.loadStockCatalogue(null);
+      return false;
+    }
+    if (kind === 'count') {
+      this.pendingMovements.set(signature, fields);
+      if (!this.pendingCountNames.has(fields.id))
+        this.pendingCountNames.set(
+          fields.id,
+          this.stockCatalogue?.items.find((item) => item.id === itemId)?.name ?? itemId
+        );
+      if (!this.persistCountRecovery()) {
+        if (!wasPending) {
+          this.pendingMovements.delete(signature);
+          this.pendingCountNames.delete(fields.id);
+        }
+        this.toast('This device could not keep the count safely. No count was sent.', 'warn');
+        return false;
+      }
+    }
+    const result = await recordStockMovement(client, fields);
+    let keptAcknowledgement = true;
+    if (kind === 'count') {
+      if (result.outcome === 'saved' && !this.unmounted) {
+        // Drop the acknowledged value from the task before forgetting its replay identity.
+        const name = this.pendingCountNames.get(fields.id);
+        const kept = this.persistCountRecovery(fields);
+        keptAcknowledgement = kept;
+        if (kept) {
+          if (this.pendingMovements.get(signature)?.id === fields.id)
+            this.pendingMovements.delete(signature);
+          this.pendingCountNames.delete(fields.id);
+        }
+        if (kept)
+          this.setState((s) => {
+            const task = s.stocktake as CountRecovery['task'];
+            const counts = { ...task?.counts };
+            if (
+              name &&
+              this.countedItemIds.get(name) === fields.itemId &&
+              this.countedAt[name] === fields.at &&
+              Number(counts[name]) === fields.qty
+            )
+              delete counts[name];
+            return { stocktake: task ? { ...task, counts } : null };
+          });
+      } else if (result.outcome === 'refused' && !wasPending) {
+        this.pendingMovements.delete(signature);
+        this.pendingCountNames.delete(fields.id);
+        this.persistCountRecovery();
+      }
+    } else if (result.outcome === 'offline') this.pendingMovements.set(signature, fields);
+    else this.pendingMovements.delete(signature);
+    await this.loadStockCatalogue(null);
+    if (result.outcome !== 'saved' || !keptAcknowledgement) {
+      this.toast(
+        !keptAcknowledgement
+          ? 'The server confirmed the count, but this device could not finish its saved copy. Keep the entry and check it again when storage works.'
+          : result.outcome === 'refused'
+            ? STOCK_COPY.movementRefused
+            : STOCK_COPY.movementNotSaved,
+        'warn'
+      );
+      return false;
+    }
+    return true;
+  }
+
+  private countRecoveryScope(): string {
+    return process.env.NEXT_PUBLIC_SUPABASE_URL || 'unconfigured';
+  }
+
+  private async takeCountOwnership(): Promise<boolean> {
+    if (this.releaseCountLease) return true;
+    if (this.unmounted || this.state.role !== 'owner') return false;
+    if (this.countLeaseRequest) return this.countLeaseRequest;
+    const epoch = this.countLeaseEpoch;
+    this.countLeaseRequest = holdCountLock(this.countRecoveryScope()).then((release) => {
+      if (
+        !release ||
+        this.unmounted ||
+        this.state.role !== 'owner' ||
+        epoch !== this.countLeaseEpoch
+      ) {
+        release?.();
+        this.countRecoveryProblem =
+          'Counting is unavailable in this tab. Close other Happy Cookie tabs, or check browser storage, then try again.';
+        return false;
+      }
+      this.releaseCountLease = release;
+      return true;
+    });
+    try {
+      return await this.countLeaseRequest;
+    } finally {
+      this.countLeaseRequest = null;
+    }
+  }
+
+  private dropCountOwnership(): void {
+    this.countLeaseEpoch += 1;
+    this.releaseCountLease?.();
+    this.releaseCountLease = null;
+    this.countRecoveryReady = false;
+    this.countRestoring = false;
+  }
+
+  private restoreCountRecovery(): void {
+    if (
+      this.countRecoveryReady ||
+      this.countRestoring ||
+      !this.releaseCountLease ||
+      this.unmounted ||
+      this.state.role !== 'owner'
+    )
+      return;
+    const saved = readCountRecovery(this.countRecoveryScope());
+    if (saved.status === 'invalid' || saved.status === 'unavailable') {
+      this.countRecoveryProblem =
+        'The saved count could not be read. Resolve device storage before sending a count.';
+      return;
+    }
+    for (const [key, fields] of this.pendingMovements)
+      if (fields.kind === 'count') this.pendingMovements.delete(key);
+    this.pendingCountNames.clear();
+    this.countedAt = {};
+    this.countedItemIds.clear();
+    const finishRestore = () => {
+      this.countRestoring = false;
+      this.countRecoveryReady =
+        !!this.releaseCountLease && !this.unmounted && this.state.role === 'owner';
+      this.persistCountRecovery();
+    };
+    if (!saved.value) {
+      this.countRestoring = true;
+      this.setState({ stocktake: null, liveCountPaused: false }, finishRestore);
+      return;
+    }
+    const copy = saved.value;
+    this.countedAt = { ...copy.countedAt };
+    this.countedItemIds = new Map(Object.entries(copy.itemIds));
+    for (const { name, fields } of copy.pending) {
+      this.pendingMovements.set(
+        [
+          fields.itemId,
+          fields.kind,
+          fields.qty,
+          fields.costCents,
+          fields.supplier,
+          fields.reason
+        ].join('|'),
+        fields
+      );
+      this.pendingCountNames.set(fields.id, name);
+    }
+    const task =
+      copy.task ??
+      (copy.pending.length
+        ? {
+            i: 0,
+            items: [...new Set(copy.pending.map((row) => row.name))],
+            counts: Object.fromEntries(
+              copy.pending.map((row) => [row.name, String(row.fields.qty)])
+            )
+          }
+        : null);
+    if (!copy.task)
+      for (const { name, fields } of copy.pending) {
+        this.countedAt[name] = fields.at;
+        this.countedItemIds.set(name, fields.itemId);
+      }
+    this.countRestoring = true;
+    this.setState(
+      { stocktake: task, liveStockOpen: copy.openItem, liveCountPaused: true },
+      finishRestore
+    );
+  }
+
+  private persistCountRecovery(acknowledged?: MovementFields): boolean {
+    if (
+      !isLiveMode() ||
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      !this.countRecoveryReady ||
+      !this.releaseCountLease
+    )
+      return false;
+    const current = this.state.stocktake as CountRecovery['task'];
+    const counts = { ...current?.counts };
+    const name = acknowledged ? this.pendingCountNames.get(acknowledged.id) : undefined;
+    if (
+      name &&
+      acknowledged &&
+      this.countedItemIds.get(name) === acknowledged.itemId &&
+      this.countedAt[name] === acknowledged.at &&
+      Number(counts[name]) === acknowledged.qty
+    )
+      delete counts[name];
+    const task = current ? { i: current.i, items: current.items, counts } : null;
+    const pending = [...this.pendingMovements.values()]
+      .filter((fields) => fields.kind === 'count' && fields.id !== acknowledged?.id)
+      .map((fields) => ({
+        name: this.pendingCountNames.get(fields.id) ?? fields.itemId,
+        fields: fields as CountRecovery['pending'][number]['fields']
+      }));
+    const scope = this.countRecoveryScope();
+    const ok = writeCountRecovery(
+      scope,
+      task || pending.length
+        ? {
+            version: 1,
+            scope,
+            task,
+            pending,
+            countedAt: this.countedAt,
+            itemIds: Object.fromEntries(this.countedItemIds),
+            openItem: typeof this.state.liveStockOpen === 'string' ? this.state.liveStockOpen : null
+          }
+        : null
+    );
+    const problem = ok
+      ? null
+      : 'This count could not be kept on the device. No new count will be sent until storage works.';
+    if (problem !== this.countRecoveryProblem) {
+      this.countRecoveryProblem = problem;
+      if (!this.unmounted && !acknowledged) this.forceUpdate();
+    }
+    return ok;
+  }
+
+  /** Explicit replay of saved identities, including renamed or switched-off items. Never auto-sends on restore. */
+  async recoverStockCount(): Promise<string | null> {
+    if (this.countRecoveryBusy) return 'The previous save is still being checked.';
+    this.countRecoveryBusy = true;
+    if (!this.unmounted) this.forceUpdate();
+    try {
+      for (const fields of [...this.pendingMovements.values()].filter((f) => f.kind === 'count')) {
+        this.recoveringCountId = fields.id;
+        if (
+          !(await this.recordMovement(
+            fields.itemId,
+            fields.kind,
+            fields.qty,
+            fields.costCents,
+            fields.supplier,
+            fields.reason,
+            fields.at
+          ))
+        )
+          return 'The previous count is still unconfirmed. Its original entry is kept for another check.';
+      }
+      this.setState((s) => {
+        const task = s.stocktake as CountRecovery['task'];
+        return {
+          stocktake:
+            task && Object.values(task.counts).some((value) => value.trim() !== '') ? task : null,
+          liveCountPaused: false
+        };
+      });
+      return null;
+    } finally {
+      this.recoveringCountId = null;
+      this.countRecoveryBusy = false;
+      if (!this.unmounted) this.forceUpdate();
+    }
+  }
+
+  /** The ported "Set to" on an item: the total counted becomes a count movement. */
+  private async liveSaveInv(name: string, qty: unknown): Promise<void> {
+    const item = this.stockItem(name);
+    const n = Number(qty);
+    if (!item || qty === '' || !Number.isFinite(n) || n < 0)
+      return void this.toast('Enter a quantity of 0 or more.', 'warn');
+    if (await this.recordMovement(item.id, 'count', n, null, '', '')) {
+      this.setState({ sheet: null });
+      this.toast(name + ' updated.');
+    } else this.setState({ sheet: null });
+  }
+
+  /** The ported add and subtract on an item: a signed adjustment with a fixed reason. */
+  private async liveAdjustInv(
+    name: string,
+    qty: unknown,
+    dir: number,
+    note?: string
+  ): Promise<boolean> {
+    const item = this.stockItem(name);
+    const n = Math.abs(Number(qty) || 0);
+    if (!n) {
+      this.toast('Type how much to ' + (dir < 0 ? 'subtract' : 'add') + '.', 'warn');
+      return false;
+    }
+    if (!item) return false;
+    const before = item.onHand;
+    const saved = await this.recordMovement(
+      item.id,
+      'adjust',
+      dir * n,
+      null,
+      '',
+      note || STOCK_COPY.adjustReason
+    );
+    this.setState({ sheet: null });
+    if (saved) {
+      const after = this.stockItem(name)?.onHand ?? before;
+      this.toast(name + ': ' + before + ' ' + item.unit + ' → ' + after + ' ' + item.unit + '.');
+    }
+    return saved;
+  }
+
+  /** The ported waste sheet for raw stock: a waste movement (never more than is there), with the cost the engine works out. */
+  private async liveWaste(name: string, qty: unknown, why: string): Promise<boolean> {
+    const item = this.stockItem(name);
+    const n = Number(qty) || 0;
+    if (!n) {
+      this.toast('Enter how much went to waste.', 'warn');
+      return false;
+    }
+    if (!item) return false;
+    const perUnit = (this as unknown as InvActions).costPerUnit(name);
+    const cost = Number.isFinite(perUnit) ? Math.round(n * perUnit) : null;
+    if (await this.recordMovement(item.id, 'waste', n, null, '', why || 'Spoiled')) {
+      this.setState({ sheet: null });
+      // On the "when used" basis the waste is a cost in the books the day it happens (or listed as not costed); on the "bought"
+      // basis it was expensed when bought. Until the books are read, which basis it is is not known, so neither is said.
+      const basis = this.booksRows?.basis;
+      const effect =
+        basis === undefined
+          ? ''
+          : basis === 'bought'
+            ? ' ' + COST_COPY.wasteBought
+            : ' ' + (cost === null ? COST_COPY.wasteUsedPending : COST_COPY.wasteUsed);
+      this.toast(
+        n +
+          ' of ' +
+          name.toLowerCase() +
+          ' written off. ' +
+          (cost === null
+            ? COST_COPY.wastePending
+            : 'About ₱' + cost.toLocaleString('en-PH') + ' of stock gone.') +
+          effect,
+        'warn'
+      );
+      return true;
+    }
+    this.setState({ sheet: null });
+    return false;
+  }
+
+  private engineAddExpense:
+    ((cat: string, label: string, amount: unknown, item: string, qty: unknown) => void) | null =
+    null;
+  private engineDraw: ((amount: unknown, note: string) => void) | null = null;
+
+  /** Today is this moment; an earlier date is midday in Manila on that date, so it lands in its own day and period. */
+  private entryAt(date: string): number {
+    return date === manilaToday(Number(this.state.now))
+      ? Date.now()
+      : manilaMidnight(date) + 12 * 3_600_000;
+  }
+
+  private engineConfirmReceive:
+    | ((
+        event: { preventDefault: () => void; target: unknown },
+        item: { name: string; supplier: string; key: string; add: number }
+      ) => void)
+    | null = null;
+
+  /**
+   * One line of a delivery: the record first, then the engine's own bookkeeping for that item, as
+   * the receive sheet does. The caller reads stock and the books back once, after the last line.
+   */
+  private async receiveLine(
+    name: string,
+    qty: number,
+    paid: number,
+    supplier: string
+  ): Promise<boolean> {
+    if (!(await this.liveReceipt(name, qty, paid, supplier || '—'))) return false;
+    const stock = this.stockItem(name);
+    const row = this.groceryPlanRows().find((plan) => plan.key === name);
+    // The engine's own price and ledger lines name the supplier this delivery came from.
+    const planned = row ? { ...row, name, supplier: supplier || row.supplier } : null;
+    const item = planned ?? {
+      key: name,
+      name,
+      unit: stock?.unit ?? '',
+      isPack: stock?.category === 'Packaging',
+      add: qty,
+      cost: paid,
+      supplier,
+      offList: true
+    };
+    const event = {
+      preventDefault: () => {},
+      target: {
+        rqty: { value: String(qty) },
+        rpaid: { value: String(paid) },
+        rsub: { value: '' }
+      }
+    };
+    this.withoutUndo(() => this.engineConfirmReceive?.(event, item));
+    return true;
+  }
+
+  /** A delivery came in: a receipt movement, with what was paid, which also writes the cost to the books once. */
+  private async liveReceipt(
+    name: string,
+    qty: number,
+    spendPesos: number,
+    supplier: string
+  ): Promise<boolean> {
+    const item = this.stockItem(name);
+    if (!item) {
+      await this.loadStockCatalogue(null);
+      return false;
+    }
+    const cents =
+      Number.isFinite(spendPesos) && spendPesos > 0 ? pesosToCentavos(spendPesos) : null;
+    return this.recordMovement(
+      item.id,
+      'receipt',
+      qty,
+      cents,
+      supplier === '—' ? '' : supplier,
+      ''
+    );
+  }
+
+  /**
+   * The ported stocktake: each item counted becomes a count movement, taken at the moment it was entered (a delivery received
+   * after that is refused, not wiped out). It stops at the first count that cannot be saved and keeps the rest on the count sheet.
+   */
+  private async liveReconcile(): Promise<boolean> {
+    const stocktake = this.state.stocktake as { counts?: Record<string, string> } | null;
+    const counts = { ...(stocktake?.counts ?? {}) } as Record<string, string>;
+    const names = Object.keys(counts).filter((n) => String(counts[n] ?? '').trim() !== '');
+    let corrected = 0;
+    let value = 0;
+    let valued = true; // false once a corrected item has no known cost: the total would be a part of the truth
+    let saved = 0;
+    for (const name of names) {
+      const item = this.stockItem(name);
+      const counted = Number(counts[name]);
+      if (item && this.countedItemIds.get(name) !== item.id) {
+        this.toast(
+          'This item changed since the count started. Reopen the current item and count it again.',
+          'warn'
+        );
+        break;
+      }
+      if (!item || !Number.isFinite(counted) || counted < 0) break;
+      const before = item.onHand;
+      if (
+        !(await this.recordMovement(item.id, 'count', counted, null, '', '', this.countedAt[name]))
+      )
+        break;
+      saved += 1;
+      delete counts[name];
+      if (counted !== before) {
+        corrected += 1;
+        const { perUnit } = this.stockUnitCost(item);
+        if (perUnit !== null) value += (counted - before) * perUnit;
+        else valued = false;
+      }
+    }
+    if (saved < names.length) {
+      // Some are not in: what is unsaved stays on the count sheet.
+      this.setState((s) => ({
+        stocktake: s.stocktake ? { ...(s.stocktake as object), counts } : s.stocktake
+      }));
+      this.toast(STOCK_COPY.someSaved(saved, names.length), 'warn');
+      return false;
+    }
+    this.setState({ stocktake: null, liveCountPaused: false });
+    if (!saved) return true;
+    const shown = Math.abs(Math.round(value)).toLocaleString('en-PH');
+    this.toast(
+      corrected === 0
+        ? STOCK_COPY.counted(0)
+        : STOCK_COPY.counted(corrected) +
+            (!valued
+              ? COST_COPY.stocktakePending
+              : value < 0
+                ? ' ₱' + shown + ' less stock than your records said.'
+                : ' ₱' + shown + ' more than your records said.'),
+      corrected === 0 ? 'ok' : 'warn'
+    );
+    return true;
+  }
+
+  /** The ported "Remove" button: the item is switched off (never deleted), so past records keep their history. */
+  private async liveRemoveInv(name: string): Promise<void> {
+    const client = this.stockClient;
+    const item = this.stockCatalogue?.items.find((i) => i.active && i.name === name);
+    if (this.state.role !== 'owner' || !client || !item)
+      return void this.toast(STAFF_COPY.offline, 'warn');
+    const outcome = await saveStockItem(
+      client,
+      {
+        id: item.id,
+        name: item.name,
+        category: item.category,
+        unit: item.unit,
+        parLevel: item.parLevel,
+        packSize: item.packSize,
+        packLabel: item.packLabel,
+        supplierId: item.supplierId,
+        useByDays: item.useByDays,
+        active: false
+      },
+      item.updatedAt
+    );
+    await this.loadStockCatalogue(null);
+    if (outcome !== 'saved') {
+      return void this.toast(
+        outcome === 'conflict' ? STOCK_COPY.conflict : STAFF_COPY.offline,
+        'warn'
+      );
+    }
+    this.setState({ sheet: null });
+    this.toast(name + ' ' + STOCK_COPY.removedNote, 'warn');
+  }
+
+  // ------------------------------------------------------------------ B5-1: the New Stock screens' data
+
+  /** How many movements the item page asks for (the database allows 1 to 200). */
+  private static readonly MOVEMENT_LIMIT = 50;
+
+  /** Reads one item's movements for its page. A cached answer stays on show while a newer one is read; a missing function or a failed read is `unavailable`. */
+  private async loadMovements(itemId: string): Promise<void> {
+    const client = this.stockClient as MovementsClient | null;
+    if (!isLiveMode() || !client || this.state.role !== 'owner') return;
+    const token = (this.movementToken += 1);
+    this.movementTokens.set(itemId, token);
+    const read = await fetchItemMovements(client, itemId, OpsRuntime.MOVEMENT_LIMIT);
+    // A newer read of this item started meanwhile: it will apply, an older answer must not put an older history back.
+    if (this.movementTokens.get(itemId) !== token || this.unmounted) return;
+    this.movementReads.set(
+      itemId,
+      read.status === 'ok'
+        ? { state: 'ready', rows: read.rows }
+        : { state: 'unavailable', rows: [] }
+    );
+    this.setState({});
+  }
+
+  /** After a stock movement or a catalogue reload: other items' histories are dropped, the open one is read again (its rows stay on show meanwhile). */
+  private refreshMovements(): void {
+    const open = (this.state as Record<string, unknown>).liveStockOpen;
+    for (const id of [...this.movementReads.keys()]) if (id !== open) this.movementReads.delete(id);
+    if (typeof open !== 'string') return;
+    if (!this.stockCatalogue?.items.some((i) => i.id === open)) {
+      this.movementReads.delete(open);
+      this.setState({ liveStockOpen: null, liveStockReturn: null });
+      return;
+    }
+    void this.loadMovements(open);
+  }
+
+  /**
+   * `prices` opens the item's price page; `returnTo` is the screen Compare prices came from, which Back goes back to.
+   * Opening an item from the Inventory list passes neither, so Back stays on the list (HCB-012).
+   */
+  private openStockItemPage(
+    id: string,
+    opened: { prices?: boolean; returnTo?: ScreenKey | null } = {}
+  ): void {
+    const cached = this.movementReads.get(id);
+    if (!cached || cached.state !== 'ready')
+      this.movementReads.set(id, { state: 'loading', rows: [] });
+    this.setState({
+      liveStockOpen: id,
+      liveStockPriceOpen: opened.prices === true,
+      liveStockReturn: opened.returnTo ?? null
+    });
+    if (!cached || cached.state !== 'ready') void this.loadMovements(id);
+  }
+
+  /** What Back is called on the prices page when Compare prices came from `screen`. */
+  private stockReturnLabel(screen: string): string {
+    return screen === 'grocery' ? 'Back to Shopping' : 'Back';
+  }
+
+  /** Closes the open item. When Compare prices brought her here from another screen, Back goes back to that screen. */
+  private closeStockItem(): void {
+    const origin = this.state.liveStockReturn;
+    this.setState({ liveStockOpen: null, liveStockPriceOpen: false, liveStockReturn: null });
+    if (typeof origin === 'string' && isScreenKey(origin) && origin !== 'inventory')
+      this.go(origin);
+  }
+
+  /** The cost per unit and where it came from: the database's for the owner, else the engine's own (a database before B3b). Unknown is null. */
+  private stockUnitCost(item: StockItem): { perUnit: number | null; source: string | null } {
+    if (this.costsFromDatabase()) {
+      if (this.costReads !== 'ok' || !this.itemCosts) return { perUnit: null, source: null };
+      return {
+        perUnit: this.itemCosts.byId.get(item.id) ?? null,
+        source: this.itemCosts.sourceById.get(item.id) ?? null
+      };
+    }
+    const cost = (this as unknown as CostActions).costPerUnit(item.name);
+    // The engine answers 0 for an item nobody has priced: that is "unknown", never a cost of nothing.
+    return { perUnit: Number.isFinite(cost) && cost > 0 ? cost : null, source: null };
+  }
+
+  private setItemPricesOpen(id: string, value: boolean): void {
+    if (
+      !isLiveMode() ||
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      this.state.screen !== 'inventory' ||
+      this.state.liveStockOpen !== id ||
+      !this.stockCatalogue?.items.some((item) => item.id === id)
+    )
+      return;
+    this.setState({ liveStockPriceOpen: value });
+  }
+
+  /** Shopping's Compare prices: the item's own price page, on the Inventory screen. */
+  private openItemPrices(id: string): void {
+    const from = this.state.screen;
+    if (from !== 'inventory') this.go('inventory');
+    this.setState({}, () => {
+      if (
+        !isLiveMode() ||
+        this.unmounted ||
+        this.state.role !== 'owner' ||
+        this.state.screen !== 'inventory' ||
+        !this.stockCatalogue?.items.some((item) => item.id === id)
+      )
+        return;
+      // The item and its price page open in one update, so Back has the origin the moment the page shows.
+      this.openStockItemPage(id, { prices: true, returnTo: from === 'inventory' ? null : from });
+    });
+  }
+
+  /** Category context comes from the list; measured quantities and posting stay with the existing count operation. */
+  private startCategoryCount(category: string): void {
+    if (
+      !isLiveMode() ||
+      this.state.role !== 'owner' ||
+      !this.stockCatalogue ||
+      this.unmounted ||
+      this.countSaving ||
+      this.countRecoveryBusy ||
+      (category !== 'Ingredients' && category !== 'Packaging')
+    )
+      return;
+    if (
+      this.state.stocktake ||
+      [...this.pendingMovements.values()].some((f) => f.kind === 'count')
+    ) {
+      this.setState({ liveCountPaused: false });
+      return;
+    }
+    if (!this.stockCatalogue.items.some((item) => item.active && item.category === category)) {
+      this.toast(`Add an item to ${category.toLowerCase()} before counting.`, 'warn');
+      return;
+    }
+    if (!this.countRecoveryReady || !this.releaseCountLease) {
+      void this.loadStockCatalogue(null).then(() => {
+        if (this.unmounted || !isLiveMode() || this.state.role !== 'owner') return;
+        this.setState({}, () => {
+          if (this.unmounted || !isLiveMode() || this.state.role !== 'owner') return;
+          if (this.countRecoveryReady && this.releaseCountLease) this.startCategoryCount(category);
+          else
+            this.toast(this.countRecoveryProblem ?? 'Counting is unavailable in this tab.', 'warn');
+        });
+      });
+      return;
+    }
+    this.setState(
+      { invTab: category, liveStockOpen: null, liveStockReturn: null, liveCountPaused: false },
+      () => {
+        if (isLiveMode() && this.state.role === 'owner' && !this.unmounted)
+          (this as unknown as InvActions).startStocktake();
+      }
+    );
+  }
+
+  /** The existing count flow, for one item: on its tab, with only that item on the sheet. */
+  private startItemCount(item: StockItem): void {
+    if (this.countSaving || this.countRecoveryBusy || this.unmounted || this.state.role !== 'owner')
+      return;
+    const target = this.stockCatalogue?.items.find((row) => row.id === item.id && row.active);
+    if (!target)
+      return void this.toast('This item changed. Open the current item before counting.', 'warn');
+    if (!this.countRecoveryReady) {
+      void this.loadStockCatalogue(null).then(() =>
+        this.setState({}, () => {
+          if (this.countRecoveryReady) this.startItemCount(target);
+          else
+            this.toast(this.countRecoveryProblem ?? 'Counting is unavailable in this tab.', 'warn');
+        })
+      );
+      return;
+    }
+    if ([...this.pendingMovements.values()].some((f) => f.kind === 'count')) {
+      this.setState({ liveCountPaused: false });
+      return;
+    }
+    const current = this.state.stocktake as { items: string[]; i: number } | null;
+    if (current) {
+      const items = current.items.includes(target.name)
+        ? current.items
+        : [...current.items, target.name];
+      if (!this.countedItemIds.has(target.name)) this.countedItemIds.set(target.name, target.id);
+      this.setState({
+        invTab: target.category,
+        liveStockOpen: target.id,
+        liveStockReturn: null,
+        liveCountPaused: false,
+        stocktake: { ...current, items, i: items.indexOf(target.name) }
+      });
+      return;
+    }
+    this.setState(
+      {
+        invTab: target.category,
+        liveStockOpen: target.id,
+        liveStockReturn: null,
+        liveCountPaused: false
+      } as never,
+      () => {
+        (this as unknown as InvActions).startStocktake();
+        this.setState((s) => ({
+          stocktake: s.stocktake
+            ? { ...(s.stocktake as object), items: [target.name], i: 0 }
+            : s.stocktake
+        }));
+      }
+    );
+  }
+
+  private stockItemView(
+    item: StockItem,
+    supplierNames: ReadonlyMap<string, string>,
+    paid: Record<string, { price: number; at: number }>
+  ): StockItemView {
+    const cost = this.stockUnitCost(item);
+    const last = paid[item.name];
+    return {
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      unit: item.unit,
+      active: item.active,
+      qtyText: formatQuantity(item.onHand, item.unit),
+      packText: packWords(item.packSize, item.packLabel, item.unit),
+      status: stockStatus(item.onHand, item.parLevel),
+      levelText: levelText(item.parLevel, item.unit),
+      lastCountedText: lastCountedText(item.lastCounted),
+      counted: !!item.lastCounted,
+      confidence: stockConfidence(item.onHand, !!item.lastCounted),
+      costText: unitCostText(cost.perUnit, item.unit, cost.source),
+      supplier: (item.supplierId && supplierNames.get(item.supplierId)) || STOCK_COPY.noSupplier,
+      lastPaidText: last ? lastPaidText(last.price, last.at) : null,
+      open: () => this.openStockItemPage(item.id),
+      receive: () => this.receiveDelivery.open(item.name),
+      count: () => this.startItemCount(item),
+      waste: () => this.stockChange.open(item.name, 'Waste'),
+      adjust: () => this.stockChange.open(item.name),
+      edit: () => {
+        this.stockFormFromPage = true;
+        this.sheet('stockitems', { id: item.id });
+      }
+    };
+  }
+
+  private movementView(m: ItemMovement, unit: string): StockMovementView {
+    // A cost is stamped when stock goes out (a use, a waste, a count or an adjustment that took stock off); none known is pending, never 0.
+    const outgoing = m.kind === 'use' || m.kind === 'waste' || m.qtyDelta < 0;
+    const costText =
+      m.unitCost !== null
+        ? ratePerUnitText(m.unitCost, unit)
+        : m.paid !== null
+          ? formatPesos(m.paid) + ' ' + STOCK_COPY.paid
+          : outgoing
+            ? COST_COPY.pending
+            : null;
+    return {
+      id: m.id,
+      kind: m.kind,
+      changeText: changeText(m.qtyDelta, unit),
+      costText,
+      supplier: m.supplier,
+      reason: m.reason,
+      at: m.at
+    };
+  }
+
+  /** The engine's grocery plan row, as far as this reads it (the engine's file has no types for it). */
+  private groceryPlanRows(): Array<{
+    key: string;
+    reorderOnly: boolean;
+    needText: string;
+    packText: string;
+    packs: number;
+    add: number;
+    cost: number;
+    supplier: string;
+  }> {
+    try {
+      const plan = (this as unknown as { groceryPlan: (s: unknown) => unknown }).groceryPlan(
+        this.state
+      );
+      return Array.isArray(plan) ? (plan as ReturnType<OpsRuntime['groceryPlanRows']>) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private groceryRowViews(
+    c: StockCatalogue,
+    supplierNames: ReadonlyMap<string, string>
+  ): { rows: GroceryRowView[]; lines: Array<number | null> } {
+    const plan = new Map(this.groceryPlanRows().map((p) => [p.key, p]));
+    const best = engineBestBuy(engineSuppliers(c));
+    const wanted = c.items
+      .filter(
+        (i) =>
+          i.active &&
+          ['counted', 'recorded'].includes(stockConfidence(i.onHand, !!i.lastCounted)) &&
+          stockStatus(i.onHand, i.parLevel) !== 'Good'
+      )
+      .sort(
+        (a, b) =>
+          Number(stockStatus(b.onHand, b.parLevel) === 'Out') -
+            Number(stockStatus(a.onHand, a.parLevel) === 'Out') || a.name.localeCompare(b.name)
+      );
+    const rows: GroceryRowView[] = [];
+    const lines: Array<number | null> = c.items
+      .filter((i) => i.active && stockConfidence(i.onHand, !!i.lastCounted) === 'unknown')
+      .map(() => null);
+    for (const i of wanted) {
+      const status = stockStatus(i.onHand, i.parLevel) as 'Out' | 'Low';
+      const p = plan.get(i.name);
+      const own = (i.supplierId && supplierNames.get(i.supplierId)) || STOCK_COPY.noSupplier;
+      const common = {
+        counted: !!i.lastCounted,
+        itemId: i.id,
+        name: i.name,
+        status,
+        haveText: formatQuantity(i.onHand, i.unit),
+        bought: () => this.receiveDelivery.open(i.name),
+        compare: () => this.openItemPrices(i.id)
+      };
+      if (!p) {
+        // Out or Low, but the plan has nothing to buy (nothing short of what is needed, or no level to buy back to).
+        const price = best[i.name];
+        const size = i.packSize && i.packSize > 0 ? i.packSize : null;
+        rows.push({
+          ...common,
+          neededText: formatQuantity(i.parLevel, i.unit),
+          toBuyText: STOCK_COPY.nothingToBuy,
+          packText: price?.pack || i.packLabel || STOCK_COPY.noPackSet,
+          bestPriceText: ratePerUnitText(price && size ? price.price / size : null, i.unit),
+          supplier: price?.supplier ?? own,
+          lineCostText: formatPesos(0)
+        });
+        lines.push(0);
+        continue;
+      }
+      // The engine prices an item with no supplier price at 0 with the pack '—'; that is not a price.
+      const priced = p.packText !== '—' && p.cost > 0;
+      const line = priced ? p.cost : null;
+      const label = priced ? p.packText : i.packLabel;
+      const needed = p.reorderOnly ? i.parLevel : engineAmount(p.needText, i.unit);
+      rows.push({
+        ...common,
+        neededText: needed === null ? p.needText : formatQuantity(needed, i.unit),
+        toBuyText: label
+          ? p.packs + ' × ' + label + ' (' + formatQuantity(p.add, i.unit) + ')'
+          : STOCK_COPY.buy + ' ' + formatQuantity(p.add, i.unit),
+        packText: label || STOCK_COPY.noPackSet,
+        bestPriceText: ratePerUnitText(priced && p.add > 0 ? p.cost / p.add : null, i.unit),
+        supplier: priced && p.supplier !== '—' ? p.supplier : own,
+        lineCostText: line === null ? COST_COPY.pending : formatPesos(line)
+      });
+      lines.push(lineCost(1, line));
+    }
+    return { rows, lines };
+  }
+
+  private groceryView(
+    c: StockCatalogue,
+    supplierNames: ReadonlyMap<string, string>
+  ): LiveStockVals['grocery'] {
+    const { rows, lines } = this.groceryRowViews(c, supplierNames);
+    const sum = sumKnown(lines);
+    // The budget is hers: only a value she saved counts. The database's own default (and the prototype's) is not a budget.
+    const raw = this.settingsSync?.isSet('groceryBudget')
+      ? Number((this.state.cfg as Record<string, unknown> | undefined)?.groceryBudget)
+      : Number.NaN;
+    const budget = Number.isFinite(raw) && raw >= 0 ? raw : null;
+    const known = sum.centavos / 100;
+    const over = budget !== null && known > budget;
+    return {
+      rows,
+      unknownCount: c.items.filter(
+        (i) => i.active && stockConfidence(i.onHand, !!i.lastCounted) === 'unknown'
+      ).length,
+      totalText: totalText(lines),
+      budgetText: budget === null ? null : formatPesosShort(budget),
+      budgetNoteText:
+        budget === null
+          ? null
+          : over
+            ? formatPesos(known - budget) + ' ' + STOCK_COPY.budgetOver
+            : formatPesos(budget - known) +
+              ' ' +
+              (sum.pending > 0 ? STOCK_COPY.budgetLeftSoFar : STOCK_COPY.budgetLeft),
+      overBudget: over
+    };
+  }
+
+  /** The live owner's New Stock data: null for anyone else, outside live mode, and until the catalogue has been read. */
+  private liveStockVals(): LiveStockVals | null {
+    const c = this.stockCatalogue;
+    if (!isLiveMode() || this.state.role !== 'owner' || !c) return null;
+    const supplierNames = new Map(c.suppliers.map((s) => [s.id, s.name]));
+    const paid = (this.state.paid ?? {}) as Record<string, { price: number; at: number }>;
+    const items = c.items.map((i) => this.stockItemView(i, supplierNames, paid));
+    const active = items.filter((i) => i.active);
+    const openId = (this.state as Record<string, unknown>).liveStockOpen;
+    const open = typeof openId === 'string' ? items.find((i) => i.id === openId) : undefined;
+    const reads = open ? this.movementReads.get(open.id) : undefined;
+    return {
+      online: this.stockOnline(),
+      addItem: this.addStockItem,
+      openReceive: (names) =>
+        names && names.length > 1
+          ? this.receiveDelivery.openMany(names)
+          : this.receiveDelivery.open(names?.[0]),
+      receive: this.receiveDelivery.vals(),
+      change: this.stockChange.vals(),
+      made: this.madeStock(),
+      madeRead: this.madeStockRead(),
+      bakePlan: this.bakePlan.vals(),
+      startCount: (category) => this.startCategoryCount(category),
+      manageItems: () => void this.openStockItems(),
+      items,
+      counts: {
+        total: active.length,
+        out: active.filter(
+          (i) => i.confidence !== 'unknown' && i.confidence !== 'unavailable' && i.status === 'Out'
+        ).length,
+        low: active.filter(
+          (i) => i.confidence !== 'unknown' && i.confidence !== 'unavailable' && i.status === 'Low'
+        ).length
+      },
+      page: open
+        ? {
+            item: open,
+            pricesOpen: this.state.liveStockPriceOpen === true,
+            openPrices: () => this.setItemPricesOpen(open.id, true),
+            // Opened by Compare prices from another screen: Back goes straight back there (HCB-012).
+            closePrices: () =>
+              this.state.liveStockReturn && this.state.liveStockPriceOpen === true
+                ? this.closeStockItem()
+                : this.setItemPricesOpen(open.id, false),
+            closePricesLabel:
+              this.state.liveStockReturn && this.state.liveStockPriceOpen === true
+                ? this.stockReturnLabel(String(this.state.liveStockReturn))
+                : undefined,
+            managePrices: open.active ? () => this.openItemPriceEditor(open.id) : undefined,
+            chooseSupplier:
+              open.active && this.preferredPriceSupplier(c.items.find((row) => row.id === open.id))
+                ? () => this.openItemPriceEditor(open.id, true)
+                : undefined,
+            priceSources: c.prices
+              .filter((price) => price.itemName === open.name)
+              .map((price) => {
+                const supplier = c.suppliers.find((row) => row.id === price.supplierId);
+                return {
+                  id: price.id,
+                  edit:
+                    open.active && supplier
+                      ? () => this.editStockSupplier(supplier.id, open.id, price.id)
+                      : undefined,
+                  supplierName: supplier?.name ?? 'Supplier unavailable',
+                  packText: price.packLabel || 'Pack not specified',
+                  priceText: peso(price.priceCents),
+                  historyText: price.previousCents.length
+                    ? 'Before: ' + price.previousCents.map(peso).join(', ')
+                    : 'First price',
+                  lastBought: price.lastBought,
+                  stateText: !supplier
+                    ? 'Supplier unavailable'
+                    : !supplier.active
+                      ? 'Supplier inactive'
+                      : !price.active
+                        ? 'Price not in use'
+                        : price.preferred
+                          ? 'Preferred source'
+                          : 'Saved price'
+                };
+              }),
+            retry: () =>
+              this.openStockItemPage(open.id, {
+                prices: this.state.liveStockPriceOpen === true,
+                returnTo: this.state.liveStockReturn as ScreenKey | null
+              }),
+            movementsState: reads?.state ?? 'loading',
+            movements: (reads?.rows ?? []).map((m) => this.movementView(m, open.unit)),
+            close: () => this.closeStockItem()
+          }
+        : null,
+      // After a cutover on the used basis a count that finds less stock is an expense; before it, or with the books unread, nothing is said.
+      countNote: this.booksRows?.basis === 'used' ? STOCK_COPY.countNote : null,
+      grocery: this.groceryView(c, supplierNames),
+      count: this.liveStockCount()
+    };
+  }
+
+  /** Dough and baked cookies as Inventory lists them; null until production has been read. */
+  private madeStock(): NonNullable<LiveStockVals['made']> | null {
+    if (!this.lastProduction || this.lastProductionDrop !== this.state.dropNo) return null;
+    const rows = (counts: unknown, unit: string) => {
+      const by = (counts ?? {}) as Record<string, number>;
+      return this.heldProducts().map((row) => ({
+        id: row.id,
+        name: row.short,
+        qtyText: formatQuantity(Number(by[row.id]) || 0, unit)
+      }));
+    };
+    return { dough: rows(this.state.dough, 'balls'), baked: rows(this.state.baked, 'cookies') };
+  }
+
+  private madeStockRead(): NonNullable<LiveStockVals['madeRead']> {
+    const actor = this.productionActorEpoch,
+      client = this.productionClient,
+      seq = this.productionLoadSeq,
+      generation = this.productionRecovery.generation,
+      dropNo = this.state.dropNo;
+    const selected = this.lastProductionDrop === dropNo;
+    const state =
+      this.productionReadState === 'loading'
+        ? this.productionReadingDrop === dropNo
+          ? 'loading'
+          : 'failed'
+        : this.productionReadState === 'read' && !selected
+          ? 'failed'
+          : this.productionReadState;
+    return {
+      state,
+      stale: selected && !!this.lastProduction && state !== 'read',
+      periodText: `Drop ${dropNo}`,
+      canRetry: !!client,
+      retry: () => {
+        if (
+          !this.unmounted &&
+          this.state.role === 'owner' &&
+          this.state.screen === 'inventory' &&
+          actor === this.productionActorEpoch &&
+          client === this.productionClient &&
+          seq === this.productionLoadSeq &&
+          generation === this.productionRecovery.generation &&
+          dropNo === this.state.dropNo &&
+          client
+        )
+          void this.loadProduction(null);
+      }
+    };
+  }
+
+  private liveStockCount(): NonNullable<LiveStockVals['count']> | null {
+    const task = this.state.stocktake as CountRecovery['task'];
+    const pending = [...this.pendingMovements.values()].some((f) => f.kind === 'count');
+    if (!task && !pending) return null;
+    const currentName = task?.items[task.i];
+    const currentItem = currentName ? this.stockItem(currentName) : undefined;
+    const unavailable =
+      !!currentName && (!currentItem || this.countedItemIds.get(currentName) !== currentItem.id);
+    const canChange = () => {
+      const current = this.state.stocktake as CountRecovery['task'];
+      return (
+        isLiveMode() &&
+        !this.unmounted &&
+        this.state.role === 'owner' &&
+        this.countRecoveryReady &&
+        !!this.releaseCountLease &&
+        !this.countSaving &&
+        !this.countRecoveryBusy &&
+        current?.items === task?.items &&
+        ![...this.pendingMovements.values()].some((f) => f.kind === 'count')
+      );
+    };
+    const skip = (name: string) => {
+      const current = this.state.stocktake as CountRecovery['task'];
+      const item = this.stockItem(name);
+      if (
+        !canChange() ||
+        !current ||
+        (!current.items.includes(name) && !Object.hasOwn(current.counts, name)) ||
+        (item && this.countedItemIds.get(name) === item.id)
+      )
+        return;
+      const counts = { ...current.counts };
+      delete counts[name];
+      const items = [
+        ...new Set([
+          ...current.items.filter((itemName) => itemName !== name),
+          ...Object.keys(counts).filter((itemName) => counts[itemName]!.trim() !== '')
+        ])
+      ];
+      this.setState(
+        {
+          stocktake: items.length
+            ? { ...current, counts, items, i: Math.min(current.i, items.length - 1) }
+            : null
+        },
+        () => {
+          delete this.countedAt[name];
+          this.countedItemIds.delete(name);
+          this.persistCountRecovery();
+        }
+      );
+    };
+    const rows = Object.entries(task?.counts ?? {})
+      .filter(([, value]) => value.trim() !== '')
+      .map(([name, value]) => {
+        const item = this.stockItem(name);
+        const error =
+          !item || this.countedItemIds.get(name) !== item.id
+            ? 'This item changed since the count started. Reopen the current item and count it again.'
+            : movementError({
+                id: '00000000-0000-4000-8000-000000000000',
+                itemId: item.id,
+                kind: 'count',
+                qty: Number(value),
+                costCents: null,
+                supplier: '',
+                reason: '',
+                at: this.countedAt[name] ?? Date.now()
+              });
+        return { name, amountText: `${value} ${item?.unit ?? ''}`.trim(), error };
+      });
+    return {
+      paused: this.state.liveCountPaused === true,
+      saving: this.countSaving || this.countRecoveryBusy,
+      pending,
+      storageError: this.countRecoveryProblem,
+      rows,
+      total: task ? new Set([...task.items, ...Object.keys(task.counts)]).size : 0,
+      entries: task
+        ? [...new Set([...task.items, ...Object.keys(task.counts)])].map((name) => {
+            const item = this.stockItem(name);
+            const unavailable = !item || this.countedItemIds.get(name) !== item.id;
+            return {
+              name,
+              unit: item?.unit ?? '',
+              expectedText: item ? formatQuantity(item.onHand, item.unit) : '',
+              value: task.counts[name] ?? '',
+              unavailable,
+              skip: unavailable ? () => skip(name) : undefined,
+              onInput: (value: string) => {
+                const current = this.state.stocktake as CountRecovery['task'];
+                if (
+                  !canChange() ||
+                  !current ||
+                  (!current.items.includes(name) && !Object.hasOwn(current.counts, name)) ||
+                  unavailable ||
+                  !item ||
+                  this.stockItem(name)?.id !== item.id ||
+                  this.countedItemIds.get(name) !== item.id
+                )
+                  return;
+                (this as unknown as InvActions).countInput(name, value);
+              }
+            };
+          })
+        : undefined,
+      unavailable,
+      skipUnavailable: () => {
+        if (currentName && unavailable) skip(currentName);
+      },
+      back: () => this.setState({ liveCountPaused: true }),
+      resume: () => this.setState({ liveCountPaused: false }),
+      recover: () => this.recoverStockCount(),
+      discard: () => {
+        if (
+          this.countSaving ||
+          this.countRecoveryBusy ||
+          [...this.pendingMovements.values()].some((f) => f.kind === 'count')
+        )
+          return;
+        this.setState({ stocktake: null, liveCountPaused: false });
+      },
+      save: async () => {
+        if (this.countSaving || this.countRecoveryBusy) return 'The count is still being checked.';
+        if ([...this.pendingMovements.values()].some((f) => f.kind === 'count'))
+          return 'Check the previous save before sending another count.';
+        if (!rows.length) return 'Enter at least one physical count.';
+        const error = rows.find((row) => row.error)?.error;
+        if (error) return error;
+        this.countSaving = true;
+        this.setState({});
+        try {
+          return (await this.liveReconcile())
+            ? null
+            : 'Some counts were not confirmed. Your remaining entries are kept. Review them before trying again.';
+        } finally {
+          this.countSaving = false;
+          this.setState({});
+        }
+      }
+    };
+  }
+
+  /**
+   * HCB-038: keeps each unsaved recipe edit in this browser for the verified owner and business, offers a kept one back after
+   * a reload, and forgets it once saved, discarded or otherwise cleared. Nothing runs until the recipes have been read: the
+   * placeholders typed on before the first read are not edits, and a kept edit is judged against the saved stamp it read.
+   */
+  private syncKeptRecipeEdits(): void {
+    const key = this.recipeScopeKey,
+      scope = this.recipeScope;
+    if (
+      !isLiveMode() ||
+      !scope ||
+      key === null ||
+      this.recipeAppliedScopeKey !== key ||
+      this.state.role !== 'owner' ||
+      this.recipeRows === null ||
+      this.recipeReaderState !== 'read' ||
+      this.catalogueUnread()
+    )
+      return;
+    const state = this.state as unknown as RecipeState;
+    const held = new Set(this.heldProducts().map((row) => row.id));
+    const savedStamp = (id: string) =>
+      this.recipeRows?.find((row) => row.productId === id)?.updatedAt ?? null;
+    let saveKept = false,
+      changed = false;
+    if (this.keptRecipeLoadedFor !== key) {
+      this.keptRecipeLoadedFor = key;
+      this.keptRecipeEdits = new Map(
+        readKeptRecipeEdits(scope).edits.map((edit) => [edit.productId, edit])
+      );
+      for (const [id, edit] of [...this.keptRecipeEdits]) {
+        if (!held.has(id) || state.recipeDirty?.[id]) continue;
+        if (edit.stamp === savedStamp(id)) this.keptRecipeOffers.set(id, edit);
+        else {
+          this.keptRecipeNewer.add(id);
+          this.keptRecipeEdits.delete(id);
+          saveKept = true;
+        }
+        changed = true;
+      }
+    }
+    for (const id of held) {
+      const recipe = state.recipes?.[id];
+      const kept = this.keptRecipeEdits.get(id);
+      if (state.recipeDirty?.[id] && recipe) {
+        // What she is typing now replaces an offer she has not answered.
+        if (this.keptRecipeOffers.delete(id)) changed = true;
+        const next = { value: recipe, stamp: this.recipeBaseStamp[id] ?? null };
+        if (!kept || keptRecipeFacts(kept) !== keptRecipeFacts(next)) {
+          this.keptRecipeEdits.set(id, { productId: id, ...next, at: Date.now() });
+          saveKept = true;
+        }
+      } else if (kept && !this.keptRecipeOffers.has(id)) {
+        this.keptRecipeEdits.delete(id);
+        saveKept = true;
+      }
+    }
+    if (saveKept) writeKeptRecipeEdits(scope, [...this.keptRecipeEdits.values()]);
+    if (changed) this.setState({});
+  }
+
+  /** HCB-038: what is said, if anything, about a flavour's kept unsaved edit. */
+  private keptRecipeEditView(id: string): KeptRecipeEditView | null {
+    const key = this.recipeScopeKey,
+      scope = this.recipeScope;
+    const live = () => !this.unmounted && this.recipeScopeKey === key && !!scope;
+    const forget = () => {
+      this.keptRecipeOffers.delete(id);
+      if (this.keptRecipeEdits.delete(id) && scope)
+        writeKeptRecipeEdits(scope, [...this.keptRecipeEdits.values()]);
+      this.setState({});
+    };
+    const offer = this.keptRecipeOffers.get(id);
+    if (offer)
+      return {
+        kind: 'offer',
+        restore: () => {
+          if (!live() || this.keptRecipeOffers.get(id) !== offer) return;
+          const saved = this.recipeRows?.find((row) => row.productId === id)?.updatedAt ?? null;
+          if (saved !== offer.stamp) {
+            // A newer version was saved since the page loaded: the kept edit is not applied.
+            this.keptRecipeNewer.add(id);
+            return forget();
+          }
+          this.keptRecipeOffers.delete(id);
+          this.recipeBaseStamp[id] = offer.stamp;
+          this.setState((s) => {
+            const state = s as unknown as RecipeState;
+            return {
+              recipes: { ...state.recipes, [id]: structuredClone(offer.value) },
+              recipeDirty: { ...state.recipeDirty, [id]: true }
+            } as never;
+          });
+        },
+        discard: () => {
+          if (live() && this.keptRecipeOffers.get(id) === offer) forget();
+        },
+        dismiss: () => undefined
+      };
+    if (this.keptRecipeNewer.has(id))
+      return {
+        kind: 'newer',
+        restore: () => undefined,
+        discard: () => undefined,
+        dismiss: () => {
+          if (!live()) return;
+          this.keptRecipeNewer.delete(id);
+          this.setState({});
+        }
+      };
+    return null;
+  }
+
+  private bindRecipeScope(scope: ProductionRecoveryScope | null): void {
+    const key = scope ? JSON.stringify([scope.business, scope.userId]) : null;
+    if (key === this.recipeScopeKey) return;
+    const state = this.state as unknown as RecipeState;
+    // A same-tick A -> B -> A switch must never capture A's not-yet-replaced projection as B.
+    const applied = this.recipeAppliedScopeKey === this.recipeScopeKey;
+    const current = new Map(
+      Object.entries(state.recipes ?? {})
+        .filter(
+          ([id]) =>
+            applied &&
+            state.recipeDirty?.[id] &&
+            (this.recipeRows !== null || this.recipeRestoredEdits.has(id))
+        )
+        .map(([id, value]) => [id, { value, stamp: this.recipeBaseStamp[id] ?? null }] as const)
+    );
+    const restored = this.recipeEditScopes.bind(key, current, new Set(current.keys()));
+    this.recipeScopeKey = key;
+    this.recipeScope = scope;
+    this.keptRecipeEdits = new Map();
+    this.keptRecipeLoadedFor = null;
+    this.keptRecipeOffers = new Map();
+    this.keptRecipeNewer = new Set();
+    this.recipeLoadSeq += 1;
+    this.recipeClient = null;
+    this.recipeRows = null;
+    this.recipeReaderState = 'loading';
+    this.recipeBook.reset();
+    this.recipeRestoredEdits = new Set(restored.keys());
+    this.recipeBaseStamp = Object.fromEntries([...restored].map(([id, row]) => [id, row.stamp]));
+    this.retireRecipeDraftSession();
+    const mapped = engineRecipes(
+      [],
+      PRODUCTS.map((product) => product.id)
+    );
+    this.setState(
+      {
+        ...mapped,
+        recipes: {
+          ...mapped.recipes,
+          ...Object.fromEntries([...restored].map(([id, row]) => [id, row.value]))
+        },
+        recipeDirty: Object.fromEntries([...restored.keys()].map((id) => [id, true])),
+        ...((this.state.sheet as { kind?: string } | null)?.kind === 'recipedrafts'
+          ? { sheet: null }
+          : {})
+      } as never,
+      () => {
+        if (this.recipeScopeKey === key) this.recipeAppliedScopeKey = key;
+      }
+    );
+  }
+
+  // ------------------------------------------------------------------ C2: production
+
+  /** Only the verified live gate supplies this identity; roles are never storage identities. */
+  async setProductionIdentity(input: ProductionRecoveryScope | null): Promise<void> {
+    if (!isLiveMode()) return;
+    if (this.unmounted) return this.productionRecovery.dispose();
+    const scope = input === null ? null : parseProductionScope(input);
+    this.bindRecipeScope(scope);
+    if (!this.productionRecovery.sameScope(scope)) {
+      this.closeKitchenTransfer();
+      this.productionActorEpoch += 1;
+      this.productionLoadSeq += 1;
+      this.productionClient = null;
+      this.productionReadState = 'loading';
+      this.lastProduction = null;
+      this.lastProductionDrop = null;
+      this.retireStockRead();
+      this.stockClient = null;
+      this.retireBooksRead();
+      this.booksClient = null;
+      this.setState(
+        engineProduction({ batches: [], dough: [], baked: [], shortfalls: [] }, (id) => id)
+      );
+      this.clearOrderRead();
+      this.productionRestoreId = null;
+      this.productionRestoreFocused =
+        !this.productionRecovery.scope && this.state.screen === 'batch';
+    }
+    void this.eventEntry.bind(scope);
+    await this.productionRecovery.bind(scope);
+    this.mergeLateProductionResults();
+  }
+
+  private productionWritable(): boolean {
+    return (
+      !this.unmounted &&
+      !this.productionAwaitingProjection &&
+      this.state.role === 'owner' &&
+      !this.gateNarrow &&
+      this.productionRecovery.editable
+    );
+  }
+
+  private captureProductionRecovery(scope: ProductionRecoveryScope): ProductionRecovery {
+    const pool = this.productionDrafts.pool.snapshot();
+    const saved = [...this.completedProduction].slice(-50).map(([workId, row]) => ({
+      workId,
+      name: row.name,
+      number: row.number,
+      fields: row.fields,
+      result: row.result
+    }));
+    const completed = new Set(this.completedProduction.keys());
+    const works = pool.works.filter((work) => !completed.has(work.id));
+    return {
+      version: 1,
+      scope,
+      sequence: pool.sequence,
+      selectedId: works.some((work) => work.id === pool.selectedId) ? pool.selectedId : null,
+      works,
+      requests: [...this.pendingProduction]
+        .filter(([id]) => !completed.has(id))
+        .map(([workId, fields]) => ({ workId, fields })),
+      saved,
+      entry: this.productionEntry
+    };
+  }
+
+  private clearProductionWorkspace(): Promise<void> {
+    const generation = this.productionRecovery.generation;
+    this.productionAwaitingProjection = true;
+    this.productionCaptureGeneration = -1;
+    this.productionDrafts.pool.restore([], null, 0);
+    this.pendingProduction = new Map();
+    this.completedProduction = new Map();
+    this.savingProduction = new Set();
+    this.productionWorkIds = new WeakMap();
+    this.productionResolutions = new Set();
+    this.productionEntry = null;
+    this.productionBusy = false;
+    this.productionRecordedAway = false;
+    this.setState(
+      (state) =>
+        ({
+          batch: null,
+          doughPrep: null,
+          ...(state.screen === 'batch' ? { screen: 'bake' } : {}),
+          ...((state.sheet as { kind?: string } | null)?.kind === 'mixDough' ? { sheet: null } : {})
+        }) as never,
+      () => {
+        if (generation === this.productionRecovery.generation && !this.unmounted) {
+          this.productionAwaitingProjection = false;
+          this.setState({});
+        }
+      }
+    );
+    return Promise.resolve();
+  }
+
+  private restoreProductionWorkspace(value: ProductionRecovery): Promise<void> {
+    const generation = this.productionRecovery.generation;
+    this.productionAwaitingProjection = true;
+    this.productionDrafts.pool.restore(
+      value.works,
+      value.selectedId,
+      value.sequence,
+      value.saved.map((row) => row.workId)
+    );
+    this.pendingProduction = new Map(
+      value.requests.map((row) => [row.workId, structuredClone(row.fields)])
+    );
+    this.completedProduction = new Map(
+      value.saved.map((row) => [
+        row.workId,
+        {
+          fields: row.fields,
+          result: row.result,
+          name: row.name,
+          number: row.number,
+          stockState: 'unread' as const,
+          inventoryReady: false,
+          balance: null,
+          checkedAt: null
+        }
+      ])
+    );
+    this.productionEntry = value.entry ?? null;
+    const selectedId = this.productionRestoreId ?? value.selectedId;
+    const selected = selectedId && this.productionDrafts.pool.get(selectedId);
+    const patch =
+      this.productionRestoreFocused && selected
+        ? this.productionDrafts.open(selected.id, selected.revision)
+        : null;
+    this.productionRestoreFocused = false;
+    this.productionRestoreId = null;
+    this.setState((patch ?? {}) as never, () => {
+      if (generation === this.productionRecovery.generation && !this.unmounted) {
+        this.productionAwaitingProjection = false;
+        this.setState({});
+      }
+    });
+    return Promise.resolve();
+  }
+
+  private clearAcknowledgedProductionProjection(id: string): void {
+    this.setState((state) => {
+      const projection = state as unknown as ProductionState;
+      if (projection.batch?.liveWorkId === id)
+        return { batch: null, ...(state.screen === 'batch' ? { screen: 'bake' } : {}) } as never;
+      if (projection.doughPrep?.liveWorkId === id)
+        return {
+          doughPrep: null,
+          ...((state.sheet as { kind?: string } | null)?.kind === 'mixDough' ? { sheet: null } : {})
+        } as never;
+      return {};
+    });
+  }
+
+  private mergeLateProductionResults(): void {
+    const scope = this.productionRecovery.scope;
+    if (!scope || !this.productionWritable()) return;
+    let merged = false;
+    this.productionLateSaved = this.productionLateSaved.filter((row) => {
+      if (row.scope.userId !== scope.userId || row.scope.business !== scope.business) return true;
+      const pending = this.pendingProduction.get(row.workId);
+      if (!pending || !sameProductionRequest(pending, row.fields)) return false;
+      merged = true;
+      this.completedProduction.set(row.workId, {
+        fields: row.fields,
+        result: row.result,
+        name: row.name,
+        number: row.number,
+        stockState: 'unread',
+        inventoryReady: false,
+        balance: null,
+        checkedAt: null
+      });
+      this.pendingProduction.delete(row.workId);
+      this.productionDrafts.retire(row.workId);
+      this.clearAcknowledgedProductionProjection(row.workId);
+      return false;
+    });
+    if (!merged) return;
+    this.productionRecovery.persist();
+    this.setState({});
+  }
+
+  private retryProductionRecovery = (): void => {
+    if (this.state.role !== 'owner' || this.unmounted) return;
+    if (!this.productionRecovery.editable) this.productionActorEpoch += 1;
+    const projection = this.state as unknown as ProductionState;
+    this.productionRestoreId =
+      projection.batch?.liveWorkId ?? projection.doughPrep?.liveWorkId ?? null;
+    this.productionRestoreFocused =
+      this.state.screen === 'batch' ||
+      (this.state.sheet as { kind?: string } | null)?.kind === 'mixDough';
+    void this.productionRecovery.retry().then(() => this.mergeLateProductionResults());
+  };
+
+  /** Reads the owner's batches, dough and baked counts (the live gate calls it once the owner is verified). False when it could not. */
+  async loadProduction(
+    client: ProductionClient | null,
+    observed?: (rows: Production) => void
+  ): Promise<boolean> {
+    if (client) this.productionClient = client;
+    const use = client ?? this.productionClient;
+    if (!isLiveMode()) return false;
+    if (!use) {
+      this.productionReadState = 'failed';
+      this.setState({});
+      return false;
+    }
+    const seq = (this.productionLoadSeq += 1);
+    const actor = this.productionActorEpoch;
+    const dropNo = (this.state as unknown as { dropNo: number }).dropNo;
+    this.productionReadingDrop = dropNo;
+    const current = () =>
+      !this.unmounted &&
+      seq === this.productionLoadSeq &&
+      actor === this.productionActorEpoch &&
+      use === this.productionClient &&
+      dropNo === this.state.dropNo;
+    this.productionReadState = 'loading';
+    this.setState({});
+    let rows;
+    try {
+      rows = await fetchProduction(use, dropNo);
+    } catch {
+      if (current()) {
+        this.productionReadState = 'failed';
+        this.setState({});
+      }
+      return false;
+    }
+    // A newer read started meanwhile: it will apply, an older answer must not bring back an older picture.
+    if (!current()) return false;
+    observed?.(rows);
+    this.lastProductionDrop = dropNo;
+    this.productionReadState = 'read';
+    this.applyProduction(rows);
+    return true;
+  }
+
+  private refreshProductionView = (): void => {
+    if (
+      !isLiveMode() ||
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      this.state.screen !== 'bake'
+    )
+      return;
+    if (this.productionClient) void this.loadProduction(null);
+    else {
+      this.productionReadState = 'failed';
+      this.setState({});
+    }
+  };
+
+  private liveProductionView(): NonNullable<OpsVals['liveProduction']> {
+    const dropNo = Number(this.state.dropNo);
+    const generation = this.productionRecovery.generation,
+      entry = this.productionEntry;
+    const selectedDropRead = this.lastProductionDrop === dropNo;
+    // Batches are global recent history; the plan/stock read still belongs to its selected drop.
+    const saved = this.lastProduction;
+    const valid = saved?.batches.every(
+      (row) =>
+        Number.isInteger(row.qty) &&
+        row.qty >= 0 &&
+        Number.isInteger(row.rejects) &&
+        row.rejects >= 0 &&
+        Number.isFinite(row.at) &&
+        (row.target === null || (Number.isInteger(row.target) && row.target >= 0))
+    );
+    return {
+      state:
+        this.productionReadState === 'read'
+          ? !valid
+            ? 'failed'
+            : selectedDropRead
+              ? 'read'
+              : 'loading'
+          : this.productionReadState,
+      periodText: `Drop ${dropNo}`,
+      planReady: !!(
+        valid &&
+        selectedDropRead &&
+        this.productionReadState === 'read' &&
+        this.orderSync?.loaded &&
+        this.stockCatalogue &&
+        this.recipeRows
+      ),
+      saving: this.productionBusy,
+      recovery: {
+        status: this.productionRecovery.phase,
+        retry: () => {
+          if (this.state.role === 'owner' && generation === this.productionRecovery.generation)
+            this.retryProductionRecovery();
+        },
+        ...(this.productionRecovery.phase === 'invalid'
+          ? {
+              setAside: () => {
+                if (
+                  this.state.role === 'owner' &&
+                  generation === this.productionRecovery.generation
+                )
+                  void this.productionRecovery.setAside().then((moved) => {
+                    if (!moved)
+                      this.toast(
+                        'The saved copy could not be set aside. Close other tabs and try again.',
+                        'warn'
+                      );
+                    if (!this.unmounted) this.setState({});
+                  });
+              }
+            }
+          : {}),
+        setupPeriod: entry && entry.dropNo !== dropNo ? `Drop ${entry.dropNo}` : null,
+        resumeSetup: () => {
+          if (
+            this.productionWritable() &&
+            generation === this.productionRecovery.generation &&
+            this.productionEntry === entry &&
+            entry
+          )
+            this.setState({ dropNo: entry.dropNo });
+        }
+      },
+      completed: [...this.completedProduction]
+        .slice(-50)
+        .reverse()
+        .map(([id, row]) => ({
+          id,
+          name: row.name,
+          number: row.number,
+          kind: row.fields.kind,
+          quantity: row.fields.qty,
+          recipeAmount: row.fields.recipeAmount,
+          rejects: row.fields.rejects,
+          dropNo: row.fields.dropNo,
+          version: row.fields.recipeVersion,
+          at: row.fields.at,
+          usedDough: row.result.usedDough,
+          shortfall: row.result.shortfall,
+          duplicate: row.result.duplicate,
+          stockState: row.stockState,
+          inventoryReady: row.inventoryReady,
+          balance: row.balance,
+          checkedAt: row.checkedAt,
+          retry: () => {
+            if (
+              generation === this.productionRecovery.generation &&
+              this.completedProduction.get(id) === row
+            )
+              void this.refreshProductionReceipt(id);
+          }
+        })),
+      inProgress: this.productionDrafts.list().map((work) => ({
+        id: work.id,
+        productId: work.product.id,
+        kind: work.draft.kind,
+        name: work.product.name,
+        label: `${work.draft.kind === 'batch' ? 'Batch' : 'Mix'} ${work.number}`,
+        photo: work.product.photo,
+        quantityText:
+          work.draft.kind === 'batch'
+            ? `${work.draft.target} planned`
+            : work.draft.actualBalls
+              ? `${work.draft.actualBalls} dough balls entered`
+              : 'Actual count not entered',
+        status: this.savingProduction.has(work.id)
+          ? ('Saving' as const)
+          : this.pendingProduction.has(work.id)
+            ? ('Check result' as const)
+            : work.draft.kind === 'dough'
+              ? work.draft.step === 2
+                ? ('Review' as const)
+                : ('Mix' as const)
+              : work.draft.step === 2
+                ? ('Review' as const)
+                : ('Count' as const),
+        open: () => {
+          if (generation === this.productionRecovery.generation)
+            this.openProductionWork(work.id, work.revision);
+        }
+      })),
+      rows: valid
+        ? (saved?.batches ?? []).map((row) => {
+            const product = this.heldProducts().find((p) => p.id === row.productId);
+            return {
+              ...row,
+              // HCB-004 a2: a batch of a product that is simply not read yet is not "no longer listed".
+              name:
+                product?.short ??
+                (this.catalogueUnread()
+                  ? STAFF_COPY.homeProductsNotRead
+                  : 'Product no longer listed'),
+              photo: product?.img ?? ''
+            };
+          })
+        : [],
+      refresh: this.refreshProductionView,
+      start: this.productionStartView(dropNo, !!valid)
+    };
+  }
+
+  private productionWorkMetadata(pid: string, id: string, state: ProductionProjection) {
+    const request = this.pendingProduction.get(id);
+    const version = request?.recipeVersion ?? state.recipeVer[pid];
+    const row = this.recipeRows?.find((r) => r.productId === pid);
+    const saved = row?.version === version ? row : row?.history.find((r) => r.version === version);
+    let recipe: ProductionRecipeSnapshot | null = null;
+    if (saved)
+      recipe = {
+        version,
+        yield: saved.yield,
+        lines: saved.lines.map((line) => {
+          const kind = (line as typeof line & { kind?: unknown }).kind;
+          return { ...line, kind: kind === 'ingredient' || kind === 'packaging' ? kind : null };
+        })
+      };
+    const product = PRODUCTS.find((p) => p.id === pid);
+    return {
+      product: {
+        id: pid,
+        name: product?.short ?? 'Product no longer listed',
+        photo: product?.img ?? ''
+      },
+      recipe,
+      dropNo: request?.dropNo ?? state.dropNo
+    };
+  }
+
+  private openProductionWork(id: string, revision: number): void {
+    if (
+      this.unmounted ||
+      this.state.role !== 'owner' ||
+      !['bake', 'batch'].includes(this.state.screen)
+    )
+      return;
+    const work = this.productionDrafts.pool.get(id);
+    if (!work || !PRODUCTS.some((p) => p.id === work.product.id)) {
+      this.toast('This product is unavailable. Your unfinished work is kept.', 'warn');
+      return;
+    }
+    const patch = this.productionDrafts.open(id, revision);
+    if (patch) this.setState(patch as never);
+  }
+
+  private guardedProductionBatch(view: OpsVals['batch']): OpsVals['batch'] {
+    if (!view) return view;
+    const source = (this.state as unknown as ProductionState).batch;
+    const actor = this.productionActorEpoch;
+    const owned = () =>
+      actor === this.productionActorEpoch &&
+      !this.unmounted &&
+      this.state.role === 'owner' &&
+      this.state.screen === 'batch' &&
+      (this.state as unknown as ProductionState).batch === source;
+    const writable = () =>
+      owned() &&
+      this.productionWritable() &&
+      !this.savingProduction.has(source?.liveWorkId ?? '') &&
+      !(source?.liveWorkId && this.pendingProduction.has(source.liveWorkId));
+    const guard =
+      <T extends unknown[]>(action: (...args: T) => void) =>
+      (...args: T): void => {
+        if (writable()) action(...args);
+      };
+    return {
+      ...view,
+      confirm: () => {
+        if (owned() && !this.savingProduction.has(source?.liveWorkId ?? '')) view.confirm();
+      },
+      exit: () => {
+        if (owned()) {
+          this.go('bake');
+          this.toast('Batch kept. Continue it from Make.');
+        }
+      },
+      discard: () => {
+        if (writable()) {
+          if (source?.liveWorkId) this.productionDrafts.retire(source.liveWorkId);
+          view.discard();
+        }
+      },
+      setFlavour: guard(view.setFlavour),
+      setNote: guard(view.setNote),
+      plus: guard(view.plus),
+      minus: guard(view.minus),
+      toStep1: guard(view.toStep1),
+      toStep2: guard(view.toStep2),
+      rows: view.rows.map((row) => ({ ...row, plus: guard(row.plus), minus: guard(row.minus) }))
+    };
+  }
+
+  private productionCountsView(): LiveBatchCounts | null {
+    const { batch, dropNo } = this.state as unknown as ProductionState;
+    if (!isLiveMode() || this.state.role !== 'owner' || this.state.screen !== 'batch' || !batch)
+      return null;
+    const unanswered = batch.liveWorkId ? this.pendingProduction.get(batch.liveWorkId) : undefined;
+    const work = batch.liveWorkId ? this.productionDrafts.pool.get(batch.liveWorkId) : null;
+    const saving = this.savingProduction.has(batch.liveWorkId ?? '');
+    const sourceUnavailable = !this.recipeRows?.some((row) => row.productId === batch.pid);
+    const sourceChanged = !!work && this.productionSourceChanged(work.id, batch.pid);
+    const actor = this.productionActorEpoch;
+    const actual = unanswered
+      ? String(unanswered.qty)
+      : (batch.liveActualText ?? String(batch.actual));
+    const rejects = unanswered
+      ? String(unanswered.rejects)
+      : (batch.liveRejectsText ?? String(batch.rejects ?? 0));
+    const whole = (text: string): boolean => /^\d+$/.test(text) && Number(text) <= 10000;
+    const valid =
+      whole(actual) && Number(actual) >= 1 && whole(rejects) && Number(rejects) <= Number(actual);
+    const current = (state = this.state): boolean =>
+      actor === this.productionActorEpoch &&
+      !this.unmounted &&
+      state.role === 'owner' &&
+      state.screen === 'batch' &&
+      state.dropNo === dropNo &&
+      (state as unknown as ProductionState).batch === batch &&
+      !this.savingProduction.has(batch.liveWorkId ?? '');
+    const set = (field: 'actual' | 'rejects', value: string): void => {
+      if (
+        !current() ||
+        !this.productionWritable() ||
+        this.pendingProduction.has(batch.liveWorkId ?? '') ||
+        value.length > 32
+      )
+        return;
+      this.setState((state) =>
+        current(state)
+          ? ({
+              batch: {
+                ...batch,
+                [field === 'actual' ? 'liveActualText' : 'liveRejectsText']: value,
+                ...(whole(value) ? { [field]: Number(value) } : {})
+              }
+            } as never)
+          : {}
+      );
+    };
+    const engine = this as unknown as ProductionActions;
+    return {
+      doughOnly: unanswered ? unanswered.doughOnly === true : true,
+      doughBalance:
+        this.productionReadState === 'read'
+          ? (this.lastProduction?.dough.find((row) => row.productId === batch.pid)?.balls ?? 0)
+          : null,
+      ingredientChanges: !unanswered && Object.values(batch.adj ?? {}).some((steps) => steps !== 0),
+      clearIngredientChanges: () => {
+        if (
+          current() &&
+          this.productionWritable() &&
+          !this.pendingProduction.has(batch.liveWorkId ?? '')
+        )
+          this.setState({ batch: { ...batch, adj: {}, step: 1 } } as never);
+      },
+      periodText: `Drop ${unanswered?.dropNo ?? work?.dropNo ?? dropNo}`,
+      recipeVersion: unanswered?.recipeVersion ?? work?.recipe?.version ?? null,
+      stock: (this.stockCatalogue?.items ?? [])
+        .filter((item) => Number.isFinite(item.onHand))
+        .map((item) => ({ name: item.name, balance: item.onHand, unit: item.unit })),
+      actual,
+      rejects,
+      valid,
+      saving,
+      uncertain: !!unanswered && !saving,
+      sourceChanged,
+      readOnly: !this.productionWritable(),
+      connected: this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      copyReady: this.productionRecovery.phase === 'ready',
+      retryCopy: () => {
+        if (current()) this.retryProductionRecovery();
+      },
+      sourceUnavailable,
+      retryRecipe: () => {
+        if (current() && !unanswered) void this.loadRecipes(null);
+      },
+      recipeUpdate:
+        sourceChanged && work && !saving && !unanswered
+          ? this.productionRecipeUpdate(work.id, () => current())
+          : null,
+      setActual: (value) => set('actual', value),
+      setRejects: (value) => set('rejects', value),
+      review: () => {
+        if (current() && this.productionWritable() && valid && !unanswered && !sourceUnavailable)
+          engine.batchStep(2);
+      },
+      confirm: () => {
+        if (
+          current() &&
+          this.productionWritable() &&
+          valid &&
+          (unanswered || (!sourceUnavailable && !sourceChanged))
+        )
+          engine.confirmBatch();
+      }
+    };
+  }
+
+  private productionSourceChanged(id: string, pid: string): boolean {
+    const recipe = this.productionDrafts.pool.get(id)?.recipe;
+    return !recipe || !this.productionRecipeMatches(pid, recipe);
+  }
+
+  private productionRecipeMatches(pid: string, recipe: ProductionRecipeSnapshot): boolean {
+    const saved = this.recipeRows?.find((row) => row.productId === pid);
+    const lines = (rows: Recipe['lines']) =>
+      rows.map((line) => [line.name, line.qty, line.unit, line.kind ?? null, line.itemId ?? null]);
+    if (
+      !saved ||
+      saved.version !== recipe.version ||
+      JSON.stringify([saved.yield, lines(saved.lines)]) !==
+        JSON.stringify([recipe.yield, lines(recipe.lines)])
+    )
+      return false;
+    const state = this.state as unknown as ProductionProjection;
+    const current = state.recipes[pid];
+    return (
+      state.recipeVer[pid] === recipe.version &&
+      !!current &&
+      JSON.stringify([
+        current.yield,
+        current.ing.map(([name, qty, unit]) => [name, Number(qty), unit])
+      ]) ===
+        JSON.stringify([recipe.yield, recipe.lines.map((line) => [line.name, line.qty, line.unit])])
+    );
+  }
+
+  private productionRecipeUpdate(
+    id: string,
+    owned: () => boolean
+  ): LiveProductionRecipeUpdate | null {
+    const work = this.productionDrafts.pool.get(id);
+    const row = this.recipeRows?.find((r) => r.productId === work?.product.id);
+    if (
+      !work ||
+      !row ||
+      (this.state as unknown as ProductionProjection).recipeVer[work.product.id] !== row.version
+    )
+      return null;
+    const next: ProductionRecipeSnapshot = {
+      version: row.version,
+      yield: row.yield,
+      lines: row.lines.map((line) => ({ ...line, kind: line.kind ?? null }))
+    };
+    if (!this.productionRecipeMatches(work.product.id, next)) return null;
+    const fingerprint = JSON.stringify(row);
+    const names = [
+      ...new Set([
+        ...(work.recipe?.lines ?? []).map((line) => line.name),
+        ...next.lines.map((line) => line.name)
+      ])
+    ];
+    const amount = (recipe: ProductionRecipeSnapshot | null, name: string) =>
+      !recipe
+        ? 'Not available'
+        : recipe.lines
+            .filter((line) => line.name === name)
+            .map((line) => `${line.qty} ${line.unit}`)
+            .join(' + ') || 'Not in recipe';
+    return {
+      previousVersion: work.recipe?.version ?? null,
+      version: next.version,
+      previousYield: work.recipe?.yield ?? null,
+      yield: next.yield,
+      rows: names.map((name) => ({
+        name,
+        previous: amount(work.recipe, name),
+        current: amount(next, name)
+      })),
+      use: () => {
+        if (
+          !owned() ||
+          !this.productionWritable() ||
+          this.state.role !== 'owner' ||
+          this.pendingProduction.has(id) ||
+          this.savingProduction.has(id) ||
+          JSON.stringify(this.recipeRows?.find((r) => r.productId === work.product.id)) !==
+            fingerprint ||
+          !this.productionRecipeMatches(work.product.id, next)
+        )
+          return;
+        if (!this.productionDrafts.pool.useRecipe(id, work.revision, next)) return;
+        const updated = this.productionDrafts.pool.get(id);
+        const patch = updated && this.productionDrafts.open(id, updated.revision);
+        if (patch) this.setState(patch as never);
+      }
+    };
+  }
+
+  private productionDoughView(view: OpsVals['mix']): OpsVals['liveDough'] {
+    const state = this.state as unknown as ProductionProjection,
+      dp = state.doughPrep;
+    if (!view || !dp || this.state.role !== 'owner' || state.sheet?.kind !== 'mixDough')
+      return null;
+    const id = dp.liveWorkId ?? '',
+      work = this.productionDrafts.pool.get(id);
+    const unanswered = this.pendingProduction.get(id),
+      saving = this.savingProduction.has(id);
+    const facts = doughFacts(dp, work?.recipe ?? null, unanswered);
+    const sourceUnavailable =
+      !this.recipeRows?.some((row) => row.productId === dp.pid) || !facts.sourceReady;
+    const changed = !!work && this.productionSourceChanged(id, dp.pid);
+    const actor = this.productionActorEpoch;
+    const current = () =>
+      actor === this.productionActorEpoch &&
+      !this.unmounted &&
+      this.state.role === 'owner' &&
+      this.state.screen === 'bake' &&
+      (this.state as unknown as ProductionState).doughPrep === dp &&
+      (this.state.sheet as { kind?: string } | null)?.kind === 'mixDough';
+    const editable = () =>
+      current() &&
+      this.productionWritable() &&
+      !saving &&
+      !unanswered &&
+      !changed &&
+      !sourceUnavailable;
+    const engine = this as unknown as ProductionActions;
+    const step = (value: number) => {
+      if (editable()) this.setState({ doughPrep: { ...dp, step: value } } as never);
+    };
+    const full = work?.recipe?.yield ?? Number(view.fullBalls),
+      half = Math.ceil(full / 2);
+    const validAmount = facts.amount !== null;
+    return {
+      id,
+      name: work?.product.name ?? PRODUCTS.find((p) => p.id === dp.pid)?.short ?? 'Dough',
+      photo: work?.product.photo ?? '',
+      periodText: `Drop ${unanswered?.dropNo ?? work?.dropNo ?? state.dropNo}`,
+      version: unanswered?.recipeVersion ?? work?.recipe?.version ?? null,
+      balls: unanswered?.qty ?? dp.balls,
+      actualBalls: facts.actual,
+      validActual: facts.validActual,
+      recipeAmount: facts.amount,
+      setActualBalls: (value) => {
+        if (editable() && value.length <= 32)
+          this.setState({
+            doughPrep: {
+              ...dp,
+              actualBallsText: value,
+              recipeAmount: facts.amount ?? undefined,
+              step: 1
+            }
+          } as never);
+      },
+      reviewing: dp.step === 2 || !!unanswered,
+      saving,
+      uncertain: !!unanswered && !saving,
+      sourceChanged: changed,
+      readOnly: !this.productionWritable(),
+      connected: this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      copyReady: this.productionRecovery.phase === 'ready',
+      retryCopy: () => {
+        if (current()) this.retryProductionRecovery();
+      },
+      sourceUnavailable,
+      retryRecipe: () => {
+        if (current() && !saving && !unanswered) void this.loadRecipes(null);
+      },
+      validAmount,
+      recipeUpdate:
+        changed && !saving && !unanswered ? this.productionRecipeUpdate(id, current) : null,
+      portions: [
+        {
+          label: 'Full recipe',
+          selected: facts.amount === 1,
+          choose: () => {
+            if (editable())
+              this.setState({
+                doughPrep: { ...dp, balls: full, recipeAmount: 1, step: 1 }
+              } as never);
+          }
+        },
+        {
+          label: 'Half recipe',
+          selected: facts.amount === 0.5,
+          choose: () => {
+            if (editable())
+              this.setState({
+                doughPrep: { ...dp, balls: half, recipeAmount: 0.5, step: 1 }
+              } as never);
+          }
+        }
+      ],
+      rows: facts.lines.map((row) => ({
+        name: row.name,
+        amountText: formatQuantity(row.qty, row.unit),
+        ...doughStock(row, this.stockCatalogue?.items ?? null)
+      })),
+      review: () => {
+        if (facts.valid) step(2);
+      },
+      back: () => step(1),
+      confirm: () => {
+        if (
+          current() &&
+          this.productionWritable() &&
+          !saving &&
+          (unanswered || (!sourceUnavailable && !changed && facts.valid))
+        )
+          engine.confirmDough();
+      },
+      close: () => {
+        if (current()) this.setState({ sheet: null });
+      },
+      discard: () => {
+        if (current() && this.productionWritable() && !saving && !unanswered) {
+          this.productionDrafts.retire(id);
+          this.setState({ doughPrep: null, sheet: null } as never);
+        }
+      }
+    };
+  }
+
+  /** An owner-only navigation draft. All recording, request identity and stock rules stay in the existing confirm action. */
+  private productionStartView(dropNo: number, valid: boolean): LiveProductionStart {
+    const generation = this.productionEntryGeneration;
+    const actor = this.productionActorEpoch;
+    const engine = this as unknown as ProductionActions;
+    const ready = valid && this.stockCatalogue && this.recipeRows && this.productionWritable();
+    const products: LiveProductionStart['products'] = ready
+      ? (this.flavourSync?.current() ?? []).flatMap((row) => {
+          const recipe = this.recipeRows?.find((r) => r.productId === row.id);
+          if (!recipe || !Number.isInteger(recipe.yield) || recipe.yield < 1) return [];
+          const need =
+            this.productionReadState === 'read' &&
+            this.lastProductionDrop === dropNo &&
+            this.orderSync?.loaded
+              ? engine.toBake(row.id, this.state)
+              : null;
+          const needed = need !== null && Number.isInteger(need) && need >= 0 ? need : null;
+          if (!row.active && !(needed && needed > 0)) return [];
+          return [
+            {
+              id: row.id,
+              name: row.short_name || row.name,
+              photo: row.image_path,
+              yield: recipe.yield,
+              version: recipe.version,
+              doughBalls:
+                Number((this.state.dough as Record<string, number> | undefined)?.[row.id]) || 0,
+              needed
+            }
+          ];
+        })
+      : [];
+    const current = (): LiveProductionStart | null => {
+      if (
+        !isLiveMode() ||
+        this.unmounted ||
+        this.state.role !== 'owner' ||
+        this.state.screen !== 'bake' ||
+        this.state.dropNo !== dropNo ||
+        generation !== this.productionEntryGeneration ||
+        actor !== this.productionActorEpoch ||
+        !this.productionWritable()
+      )
+        return null;
+      return this.liveProductionView().start ?? null;
+    };
+    const change = (): void => this.setState({});
+    const entry = this.productionEntry;
+    const incoming = entry?.dropNo === dropNo ? entry.handoff : undefined;
+    const resolveHandoff = (replace: boolean): void => {
+      const fresh = current();
+      if (!fresh || !incoming || !entry || this.productionEntry !== entry) return;
+      const result = replace
+        ? productionHandoff(entry, incoming, fresh.products, dropNo, true)
+        : { entry: { ...entry, handoff: undefined }, error: null };
+      if (result.error) return this.toast(result.error, 'warn');
+      this.productionEntry = result.entry;
+      this.productionEntryGeneration += 1;
+      change();
+    };
+    return {
+      products,
+      handoff: incoming
+        ? {
+            source: incoming.source === 'recipe' ? 'Recipe' : 'Shopping',
+            rows: incoming.rows.map((row) => ({
+              name:
+                products.find((product) => product.id === row.productId)?.name ??
+                'Unavailable product',
+              quantity: row.quantity,
+              version: row.version
+            })),
+            use: () => resolveHandoff(true),
+            keep: () => resolveHandoff(false)
+          }
+        : undefined,
+      multi: productionPlanner(
+        this.productionEntry?.dropNo === dropNo ? this.productionEntry : null,
+        {
+          get: () => {
+            const fresh = current(),
+              entry = this.productionEntry;
+            return fresh && entry?.dropNo === dropNo ? { products: fresh.products, entry } : null;
+          },
+          set: (entry) => {
+            this.productionEntry = entry;
+            change();
+          },
+          begin: (choices) => {
+            const fresh = current(),
+              entry = this.productionEntry;
+            if (
+              !fresh ||
+              !entry ||
+              choices.length === 0 ||
+              choices.some(
+                (row) =>
+                  !validProductionChoice(
+                    row,
+                    fresh.products.find((p) => p.id === row.productId)
+                  )
+              )
+            )
+              return false;
+            const state = this.state as unknown as ProductionProjection;
+            this.productionDrafts.sync(null, state);
+            const inputs = choices.map((row) => ({
+              ...this.productionWorkMetadata(row.productId, '', state),
+              draft:
+                row.kind === 'dough'
+                  ? { kind: 'dough' as const, balls: row.quantity, note: '', step: 1 }
+                  : {
+                      kind: 'batch' as const,
+                      target: Number(row.quantity),
+                      actual: row.quantity,
+                      rejects: '0',
+                      adj: {},
+                      note: '',
+                      step: 1
+                    }
+            }));
+            if (inputs.some((input) => !input.recipe)) return false;
+            this.productionEntry = null;
+            const kept = this.productionDrafts.pool.addPlan(inputs, () =>
+              this.productionRecovery.persist()
+            );
+            if (!kept) {
+              this.productionEntry = entry;
+              change();
+              return false;
+            }
+            this.productionEntryGeneration += 1;
+            this.setState({ batch: null, doughPrep: null, sheet: null } as never);
+            return true;
+          }
+        }
+      ),
+      resume: false,
+      draft:
+        this.productionWritable() && this.productionEntry?.dropNo === dropNo
+          ? { ...this.productionEntry }
+          : null,
+      open: () => {
+        const fresh = current();
+        if (!fresh) return;
+        if (!fresh.products.length) return;
+        if (this.productionEntry?.dropNo !== dropNo) {
+          this.productionEntryGeneration += 1;
+          const one = fresh.products.length === 1 ? fresh.products[0] : undefined;
+          this.productionEntry = {
+            dropNo,
+            kind: 'batch',
+            productId: one?.id ?? '',
+            version: one?.version ?? 0,
+            quantity: one?.needed ? String(one.needed) : ''
+          };
+        }
+        change();
+      },
+      choose: (id) => {
+        const product = current()?.products.find((p) => p.id === id);
+        if (!product) return;
+        const old = this.productionEntry;
+        this.productionEntry = {
+          dropNo,
+          kind: old?.kind ?? 'batch',
+          productId: id,
+          version: product.version,
+          batchQuantity: old?.productId === id ? old.batchQuantity : undefined,
+          quantity:
+            old?.dropNo === dropNo && old.productId === id
+              ? old.quantity
+              : old?.kind === 'dough'
+                ? String(product.yield)
+                : product.needed
+                  ? String(product.needed)
+                  : ''
+        };
+        change();
+      },
+      chooseKind: (kind) => {
+        const fresh = current(),
+          old = this.productionEntry;
+        if (!fresh || !old || old.kind === kind) return;
+        const product = fresh.products.find((p) => p.id === old.productId);
+        this.productionEntry = {
+          ...old,
+          kind,
+          batchQuantity: kind === 'dough' ? old.quantity : old.batchQuantity,
+          quantity:
+            kind === 'dough' ? (product ? String(product.yield) : '') : (old.batchQuantity ?? '')
+        };
+        change();
+      },
+      setQuantity: (value) => {
+        if (!current() || this.productionEntry?.dropNo !== dropNo || value.length > 32) return;
+        this.productionEntry = { ...this.productionEntry, quantity: value };
+        change();
+      },
+      cancel: () => {
+        if (!current()) return;
+        this.productionEntry = null;
+        this.productionEntryGeneration += 1;
+        change();
+      },
+      begin: () => {
+        const fresh = current(),
+          draft = this.productionEntry;
+        const product = fresh?.products.find((p) => p.id === draft?.productId);
+        if (
+          !draft ||
+          draft.handoff ||
+          draft.dropNo !== dropNo ||
+          !product ||
+          product.version !== draft.version ||
+          this.productionLaunching ||
+          !/^\d+$/.test(draft.quantity)
+        )
+          return false;
+        const quantity = Number(draft.quantity);
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10000) return false;
+        if (
+          draft.kind === 'dough' &&
+          quantity !== product.yield &&
+          quantity !== Math.ceil(product.yield / 2)
+        )
+          return false;
+        if (draft.kind === 'dough') engine.startDough(product.id);
+        else engine.startBatch(product.id);
+        this.productionEntry = null;
+        this.productionEntryGeneration += 1;
+        this.setState((state) => {
+          if (draft.kind === 'dough') {
+            const dp = (state as unknown as ProductionState).doughPrep;
+            return dp?.pid === product.id
+              ? ({ doughPrep: { ...dp, balls: quantity } } as never)
+              : {};
+          }
+          const batch = (state as unknown as ProductionState).batch;
+          return state.screen === 'batch' && batch?.pid === product.id
+            ? ({ batch: { ...batch, target: quantity, actual: quantity } } as never)
+            : {};
+        });
+        return true;
+      }
+    };
+  }
+
+  /**
+   * The screens read the batches, the variances and the shortfalls straight from the database. The chilled dough and the baked
+   * count are also changed by actions that are not recorded there yet (binned dough or cookies, the stall's stock), so a later
+   * read moves them by what changed on the database since the last one instead of replacing them.
+   */
+  private applyProduction(rows: Production): void {
+    const patch = engineProduction(rows, (pid) => this.flavourName(pid));
+    const prev = this.lastProduction
+      ? engineProduction(this.lastProduction, (pid) => this.flavourName(pid))
+      : null;
+    this.lastProduction = rows;
+    this.setState((s: unknown) => {
+      if (!prev) return patch;
+      const st = s as {
+        dough: Record<string, number>;
+        baked: Record<string, number>;
+        doughAt: Record<string, number>;
+      };
+      const moved = (
+        now: Record<string, number>,
+        was: Record<string, number>,
+        cur: Record<string, number>
+      ) => {
+        const out: Record<string, number> = {};
+        for (const pid of new Set([
+          ...Object.keys(now),
+          ...Object.keys(was),
+          ...Object.keys(cur)
+        ])) {
+          const n = Math.max(0, (cur[pid] || 0) + (now[pid] || 0) - (was[pid] || 0));
+          if (n > 0) out[pid] = n;
+        }
+        return out;
+      };
+      const dough = moved(patch.dough, prev.dough, st.dough ?? {});
+      const doughAt: Record<string, number> = {};
+      for (const pid of Object.keys(dough)) {
+        const at = patch.doughAt[pid] ?? st.doughAt?.[pid];
+        if (at !== undefined) doughAt[pid] = at;
+      }
+      return { ...patch, dough, doughAt, baked: moved(patch.baked, prev.baked, st.baked ?? {}) };
+    });
+  }
+
+  /**
+   * Sends one dough mix or batch. Returns the answer when it was recorded (an identical retry counts), else null after telling
+   * her why. Nothing is re-read here: the engine's own bookkeeping runs next against the quantities it was shown.
+   */
+  private async recordProductionNow(
+    f: Omit<ProductionFields, 'id' | 'at'>,
+    workId: string
+  ): Promise<ProductionResult | null> {
+    const client = this.productionClient;
+    const actor = this.productionActorEpoch;
+    const generation = this.productionRecovery.generation,
+      scope = this.productionRecovery.scope;
+    const pending = this.pendingProduction,
+      completed = this.completedProduction,
+      saving = this.savingProduction;
+    if (this.state.role !== 'owner') {
+      this.toast(PRODUCTION_COPY.ownerOnly, 'warn');
+      return null;
+    }
+    if (!client) {
+      this.toast(STAFF_COPY.offline, 'warn');
+      return null;
+    }
+    if (!this.productionWritable()) {
+      this.toast('Production work is not ready on this device. Check the notice in Make.', 'warn');
+      return null;
+    }
+    if (typeof navigator !== 'undefined' && (navigator.onLine === false || !this.state.online)) {
+      this.toast('Connect before recording production. Your draft is kept.', 'warn');
+      return null;
+    }
+    this.productionDrafts.sync(null, this.state as unknown as ProductionProjection);
+    // A second tap while the first is being recorded does nothing: it would be a second record.
+    if (this.savingProduction.has(workId)) return null;
+    // Recorded while the owner was away (the role changed mid-save): finish it now, never record it again.
+    const recorded = this.completedProduction.get(workId);
+    if (recorded) {
+      this.toast('This batch was already recorded. Showing the saved result.');
+      return recorded.result;
+    }
+    if (this.productionDrafts.pool.knows(workId) && !this.productionDrafts.pool.get(workId)) {
+      this.toast('This work is already closed. Open its saved history in Make.', 'warn');
+      return null;
+    }
+    // A working draft owns its unanswered request. Equal quantities never identify another batch.
+    const fields: ProductionFields = this.pendingProduction.get(workId) ?? {
+      ...structuredClone(f),
+      id: crypto.randomUUID(),
+      at: Date.now()
+    };
+    const problem = productionError(fields);
+    if (problem) {
+      this.toast(problem, 'warn');
+      return null;
+    }
+    // Kept from before the call: whatever happens to the answer, this entry keeps its id until an answer says otherwise.
+    const existing = pending.has(workId);
+    pending.set(workId, fields);
+    if (!this.productionRecovery.persist() && !existing) {
+      if (!existing) {
+        pending.delete(workId);
+        this.productionResolutions.add(fields.id);
+      }
+      this.toast(
+        'This device could not keep the request. Nothing new was submitted. Retry in Make.',
+        'warn'
+      );
+      this.setState({});
+      return null;
+    }
+    const name =
+      this.productionDrafts.pool.get(workId)?.product.name ?? this.flavourName(fields.productId);
+    const number = this.productionDrafts.pool.get(workId)?.number;
+    this.savingProduction.add(workId);
+    this.productionBusy = true;
+    this.setState({});
+    let result: ProductionResult;
+    try {
+      result = await recordProduction(client, fields);
+    } finally {
+      saving.delete(workId);
+      if (generation === this.productionRecovery.generation) {
+        this.productionBusy = saving.size > 0;
+        if (!this.unmounted) this.setState({});
+      }
+    }
+    if (generation !== this.productionRecovery.generation) {
+      if (result.outcome === 'saved' && scope) {
+        this.productionLateSaved.push({ scope, workId, name, number, fields, result });
+        this.mergeLateProductionResults();
+      }
+      return result.outcome === 'saved' ? result : null;
+    }
+    if (result.outcome === 'saved')
+      completed.set(workId, {
+        fields,
+        result,
+        name,
+        number,
+        stockState: 'loading',
+        inventoryReady: false,
+        balance: null,
+        checkedAt: null
+      });
+    if (result.outcome !== 'offline') {
+      pending.delete(workId);
+      this.productionResolutions.add(fields.id);
+    }
+    this.productionRecovery.persist();
+    if (this.unmounted || this.state.role !== 'owner' || actor !== this.productionActorEpoch) {
+      // The server recorded it, so it leaves In progress (it must never look unsaved and be made again).
+      if (result.outcome === 'saved' && !this.unmounted) {
+        this.productionDrafts.retire(workId);
+        this.productionRecordedAway = true;
+        this.noticeProductionRecordedAway();
+      }
+      return result.outcome === 'saved' ? result : null;
+    }
+    if (result.outcome === 'saved') return result;
+    if (result.outcome === 'stale') void this.loadRecipes(null);
+    this.toast(
+      result.problem === 'legacy-retired'
+        ? 'This older request was not recorded. Your draft is kept. Review it in Prepare dough or Bake before submitting again.'
+        : result.problem === 'preparation-update'
+          ? 'This database needs the dough preparation update. Your draft is kept; nothing new was recorded.'
+          : result.problem === 'bake-update'
+            ? 'This database needs the dough-only baking update. Your draft is kept; nothing new was recorded.'
+            : result.problem === 'dough-shortage'
+              ? 'Not enough recorded dough. Your bake draft is kept. Prepare dough first, then return to this batch.'
+              : result.problem === 'dough-chronology'
+                ? 'Recorded dough cannot support this bake date. Nothing was recorded. Your counts are kept; review the dough records in Make before trying again.'
+                : result.outcome === 'stale'
+                  ? PRODUCTION_COPY.stale
+                  : result.outcome === 'refused'
+                    ? PRODUCTION_COPY.refused
+                    : PRODUCTION_COPY.notSaved,
+      'warn'
+    );
+    return null;
+  }
+
+  /**
+   * The ported waste sheet for dough or baked cookies: recorded first, then the engine's own bookkeeping (the waste record, the
+   * toast) with its own change to the counts undone, then the counts are read back. Anything the engine would refuse (more than is
+   * there) is left to it, and nothing is recorded.
+   */
+  private async liveDiscard(
+    run: () => void,
+    qty: unknown,
+    why: string,
+    pid: string,
+    kind: 'dough' | 'baked'
+  ): Promise<void> {
+    const st = this.state as unknown as {
+      dropNo: number;
+      dough: Record<string, number>;
+      baked: Record<string, number>;
+    };
+    const n = Number(qty) || 0;
+    const have = (kind === 'dough' ? st.dough : st.baked)[pid] || 0;
+    if (!n || n > have) return run(); // the engine says what is wrong
+    const client = this.productionClient;
+    if (this.state.role !== 'owner') return void this.toast(PRODUCTION_COPY.ownerOnly, 'warn');
+    if (!client) return void this.toast(STAFF_COPY.offline, 'warn');
+    if (!Number.isInteger(n)) return void this.toast(PRODUCTION_COPY.discardWhole, 'warn');
+    if (this.discardBusy) return;
+    const reason = (why || 'Spoiled').trim().slice(0, 80) || 'Spoiled';
+    const signature = JSON.stringify([kind, pid, n, reason, st.dropNo]);
+    const fields: DiscardFields = this.pendingDiscards.get(signature) ?? {
+      id: crypto.randomUUID(),
+      kind,
+      productId: pid,
+      qty: n,
+      reason,
+      dropNo: st.dropNo,
+      at: Date.now()
+    };
+    const problem = discardError(fields);
+    if (problem) return void this.toast(problem, 'warn');
+    this.pendingDiscards.set(signature, fields);
+    this.discardBusy = true;
+    let result;
+    try {
+      result = await recordDiscard(client, fields);
+    } finally {
+      this.discardBusy = false;
+    }
+    if (result.outcome !== 'offline') this.pendingDiscards.delete(signature);
+    if (result.outcome !== 'saved') {
+      this.toast(
+        result.outcome === 'refused' ? PRODUCTION_COPY.refused : PRODUCTION_COPY.notSaved,
+        'warn'
+      );
+      if (result.outcome === 'refused') await this.refreshProduction();
+      return;
+    }
+    this.keepBookkeeping(run);
+    this.unknownDiscardCost();
+    await this.refreshProduction();
+  }
+
+  /**
+   * The engine's waste record and toast work out the cost of the cookies or dough themselves. When that cost is not known (NaN) the
+   * entry keeps no cost at all (null, never NaN or 0) and the toast says so. A functional update, so it lands after the engine's own.
+   */
+  private unknownDiscardCost(): void {
+    this.setState((s) => {
+      const spoilage = (s.spoilage as Array<{ cost: number | null }>) ?? [];
+      const toast = s.toast as { msg?: string } | null;
+      return {
+        spoilage: spoilage.map((x) =>
+          x.cost === null || Number.isFinite(x.cost) ? x : { ...x, cost: null }
+        ),
+        ...(toast?.msg?.includes('NaN')
+          ? {
+              toast: {
+                ...toast,
+                msg: toast.msg.replace(/₱NaN of [a-z ]+ gone/, COST_COPY.pending.toLowerCase())
+              }
+            }
+          : {})
+      } as never;
+    });
+  }
+
+  /** What the database holds now, for the screens (after every production action, whatever happened). */
+  private noticeProductionRecordedAway(): void {
+    if (this.unmounted || this.state.role !== 'owner') return;
+    this.productionRecordedAway = false;
+    for (const id of this.completedProduction.keys())
+      this.clearAcknowledgedProductionProjection(id);
+    this.toast('A batch saved while you were away is recorded. Showing the latest counts.');
+    void this.refreshProduction(
+      [...this.completedProduction].filter(([, row]) => row.stockState !== 'read').map(([id]) => id)
+    );
+  }
+
+  /** Read-only receipt refresh, always for the acknowledged request's original period. */
+  private async refreshProductionReceipt(
+    workId: string,
+    inventoryRead?: boolean,
+    productionRead?: Production | null
+  ): Promise<void> {
+    const row = this.completedProduction.get(workId),
+      client = this.productionClient;
+    const actor = this.productionActorEpoch;
+    const current = () =>
+      !this.unmounted && this.state.role === 'owner' && actor === this.productionActorEpoch;
+    if (!isLiveMode() || !current() || !row || !client || row.reading) return;
+    row.reading = true;
+    row.stockState = 'loading';
+    this.setState({});
+    const [production, inventoryReady] = await Promise.all([
+      productionRead === undefined
+        ? fetchProduction(client, row.fields.dropNo).catch(() => null)
+        : Promise.resolve(productionRead),
+      inventoryRead === undefined ? this.loadStockCatalogue(null) : Promise.resolve(inventoryRead)
+    ]);
+    row.reading = false;
+    if (!current()) {
+      row.stockState = 'failed';
+      return;
+    }
+    if (this.completedProduction.get(workId) !== row) return;
+    const balance = !production
+      ? null
+      : row.fields.kind === 'batch'
+        ? (production.baked.find((item) => item.productId === row.fields.productId)?.qty ?? 0)
+        : (production.dough.find((item) => item.productId === row.fields.productId)?.balls ?? 0);
+    row.stockState =
+      balance !== null && Number.isInteger(balance) && balance >= 0 ? 'read' : 'failed';
+    row.inventoryReady = inventoryReady;
+    if (row.stockState === 'read') {
+      row.balance = balance;
+      row.checkedAt = Date.now();
+    }
+    this.setState({});
+  }
+
+  private async refreshProduction(workIds: string[] = []): Promise<void> {
+    const actor = this.productionActorEpoch;
+    const current = () =>
+      !this.unmounted && this.state.role === 'owner' && actor === this.productionActorEpoch;
+    if (!current()) return;
+    try {
+      const inventoryReady = await this.loadStockCatalogue(null);
+      if (!current()) return;
+      const readDrop = this.state.dropNo;
+      let snapshot: Production | null = null;
+      await this.loadProduction(null, (rows) => {
+        snapshot = rows;
+      });
+      for (const id of workIds) {
+        if (!current()) return;
+        const originalDrop = this.completedProduction.get(id)?.fields.dropNo;
+        await this.refreshProductionReceipt(
+          id,
+          inventoryReady,
+          originalDrop === readDrop ? snapshot : undefined
+        );
+      }
+    } finally {
+      if (!current()) {
+        for (const id of workIds) {
+          const row = this.completedProduction.get(id);
+          if (row?.stockState === 'loading' && !row.reading) row.stockState = 'failed';
+        }
+        if (!this.unmounted && this.state.role === 'owner') this.setState({});
+      }
+    }
+  }
+
+  /**
+   * Runs one of the engine's confirm actions for its own bookkeeping (the toast, what ran short, the screen it returns to), then
+   * puts the dough and the baked count back as they were: the database's record moves them, once, when it is read back.
+   */
+  private keepBookkeeping(run: () => void): void {
+    const before = this.state as unknown as { dough: unknown; baked: unknown; doughAt: unknown };
+    const keep = { dough: before.dough, baked: before.baked, doughAt: before.doughAt };
+    this.withoutUndo(run);
+    this.setState(keep as never);
+  }
+
+  /** Tag old in-memory drafts once. Count edits copy the tag; replacing work creates a new identity. */
+  private bindProductionWork<T extends object & { liveWorkId?: string }>(
+    key: 'batch' | 'doughPrep',
+    draft: T
+  ): { id: string; draft: T } {
+    const id = draft.liveWorkId ?? this.productionWorkIds.get(draft) ?? crypto.randomUUID();
+    this.productionWorkIds.set(draft, id);
+    const tagged = draft.liveWorkId ? draft : { ...draft, liveWorkId: id };
+    if (tagged !== draft)
+      this.setState((state) =>
+        ((state as unknown as ProductionState)[key] as unknown) === draft
+          ? ({ [key]: tagged } as never)
+          : {}
+      );
+    return { id, draft: tagged };
+  }
+
+  /** Complete only the original projection; changed sources never feed the legacy calculations. */
+  private finishProductionWork(
+    key: 'batch' | 'doughPrep',
+    work: { id: string; draft: object },
+    run: () => void
+  ): void {
+    this.productionDrafts.retire(work.id);
+    const s = this.state as unknown as ProductionState;
+    const saved = this.completedProduction.get(work.id);
+    const fields = saved?.fields;
+    const label = saved
+      ? `${saved.name}${saved.number ? ` · ${fields?.kind === 'dough' ? 'Mix' : 'Batch'} ${saved.number}` : ''} saved.`
+      : PRODUCTION_COPY.recorded;
+    const message =
+      label +
+      (saved?.result.shortfall.length
+        ? ' Some recorded stock was short; see the saved result.'
+        : '');
+    const current = s[key];
+    if (
+      current &&
+      fields &&
+      (current === work.draft || current.liveWorkId === work.id) &&
+      current.pid === fields.productId &&
+      fields.kind === (key === 'batch' ? 'batch' : 'dough')
+    ) {
+      const sameSource =
+        s.dropNo === fields.dropNo && s.recipeVer[fields.productId] === fields.recipeVersion;
+      const batch = s.batch;
+      const amounts =
+        key === 'doughPrep'
+          ? !!s.doughPrep && sameDoughSubmission(s.doughPrep, fields)
+          : !!batch &&
+            batch.actual === fields.qty &&
+            batch.target === fields.target &&
+            (batch.rejects ?? 0) === fields.rejects &&
+            JSON.stringify(
+              Object.entries(batch.adj ?? {})
+                .filter(([, v]) => v)
+                .sort()
+            ) === JSON.stringify(Object.entries(fields.adj).sort());
+      const sheet = this.state.sheet as { kind?: string } | null;
+      const focused = key === 'batch' ? this.state.screen === 'batch' : sheet?.kind === 'mixDough';
+      if (sameSource && amounts && focused) {
+        this.keepBookkeeping(run);
+        this.toast(message);
+        return;
+      }
+      // Its acknowledgement is real even if the owner moved elsewhere. Close only its own projection.
+      this.setState({
+        [key]: null,
+        ...(key === 'batch' && focused ? { screen: 'bake' } : {}),
+        ...(key === 'doughPrep' && focused ? { sheet: null } : {})
+      } as never);
+    }
+    this.toast(message);
+  }
+
+  private installProductionOverrides(): void {
+    const eng = this as unknown as ProductionActions;
+    const keep = {
+      goBack: eng.goBack,
+      startDough: eng.startDough,
+      setDoughFlavour: eng.setDoughFlavour,
+      setDoughPortion: eng.setDoughPortion,
+      startBatch: eng.startBatch,
+      confirmDough: eng.confirmDough,
+      confirmBatch: eng.confirmBatch
+    };
+    eng.goBack = () => {
+      if (
+        this.state.role === 'owner' &&
+        this.state.screen === 'batch' &&
+        (this.state as unknown as ProductionState).batch
+      )
+        this.go('bake');
+      else if (
+        this.state.role === 'owner' &&
+        !this.state.stocktake &&
+        ((this.state as unknown as ProductionState).batch ||
+          (this.state as unknown as ProductionState).doughPrep)
+      ) {
+        const actor = this.productionActorEpoch;
+        this.setState({ batch: null, doughPrep: null } as never, () => {
+          if (!this.unmounted && this.state.role === 'owner' && actor === this.productionActorEpoch)
+            keep.goBack();
+        });
+      } else keep.goBack();
+    };
+    const doughLocked = (): boolean => {
+      const dp = (this.state as unknown as ProductionState).doughPrep;
+      return (
+        !this.productionWritable() ||
+        !!(
+          dp?.liveWorkId &&
+          (this.savingProduction.has(dp.liveWorkId) || this.pendingProduction.has(dp.liveWorkId))
+        )
+      );
+    };
+    eng.startDough = (pid) => {
+      if (
+        !this.productionWritable() ||
+        this.productionLaunching ||
+        this.state.role !== 'owner' ||
+        !PRODUCTS.some((p) => p.id === pid)
+      )
+        return;
+      this.productionLaunching = true;
+      if (this.state.screen !== 'bake') this.go('bake');
+      keep.startDough(pid);
+      this.setState({ batch: null } as never, () => {
+        this.productionLaunching = false;
+      });
+    };
+    eng.setDoughFlavour = (pid) => {
+      if (doughLocked()) return;
+      const other = this.productionDrafts
+        .list()
+        .find((w) => w.product.id === pid && w.draft.kind === 'dough');
+      if (other) this.openProductionWork(other.id, other.revision);
+      else eng.startDough(pid);
+    };
+    eng.setDoughPortion = (kind) => {
+      if (!doughLocked()) {
+        keep.setDoughPortion(kind);
+        this.setState((state) => {
+          const dp = (state as unknown as ProductionState).doughPrep;
+          return dp
+            ? ({ doughPrep: { ...dp, recipeAmount: kind === 'full' ? 1 : 0.5, step: 1 } } as never)
+            : {};
+        });
+      }
+    };
+    // Every launch gets independent work; lifecycle capture retains the replaced projection.
+    eng.startBatch = (pid) => {
+      if (
+        !this.productionWritable() ||
+        this.productionLaunching ||
+        this.state.role !== 'owner' ||
+        !PRODUCTS.some((p) => p.id === pid)
+      )
+        return;
+      this.productionLaunching = true;
+      keep.startBatch(pid);
+      this.setState({ doughPrep: null } as never, () => {
+        this.productionLaunching = false;
+      });
+    };
+    eng.setBatchFlavour = (pid) => {
+      const b = (this.state as unknown as ProductionState).batch;
+      if (
+        !this.productionWritable() ||
+        !b ||
+        b.pid === pid ||
+        (b.liveWorkId && this.pendingProduction.has(b.liveWorkId))
+      )
+        return;
+      const other = this.productionDrafts
+        .list()
+        .find((w) => w.product.id === pid && w.draft.kind === 'batch');
+      if (other) this.openProductionWork(other.id, other.revision);
+      else eng.startBatch(pid);
+    };
+    eng.confirmDough = () => {
+      const s = this.state as unknown as ProductionState;
+      const dp = s.doughPrep;
+      if (!dp) return;
+      if (this.state.role !== 'owner') return void this.toast(PRODUCTION_COPY.ownerOnly, 'warn');
+      if (!this.productionClient) return void this.toast(STAFF_COPY.offline, 'warn');
+      const work = this.bindProductionWork('doughPrep', dp),
+        actor = this.productionActorEpoch;
+      const snapshot = this.productionDrafts.pool.get(work.id);
+      if (this.completedProduction.has(work.id)) {
+        this.clearAcknowledgedProductionProjection(work.id);
+        return;
+      }
+      if (
+        !this.pendingProduction.has(work.id) &&
+        !this.recipeRows?.some((row) => row.productId === dp.pid)
+      )
+        return void this.toast(
+          'Saved recipe unavailable. Your mix is kept. Retry the saved recipe.',
+          'warn'
+        );
+      if (
+        snapshot &&
+        !this.pendingProduction.has(work.id) &&
+        this.productionSourceChanged(work.id, dp.pid)
+      )
+        return void this.toast('The recipe changed. Your dough draft is kept for review.', 'warn');
+      const facts = doughFacts(dp, snapshot?.recipe ?? null, this.pendingProduction.get(work.id));
+      if (!this.pendingProduction.has(work.id) && !facts.valid)
+        return void this.toast(
+          'Choose a recipe amount and enter the actual dough balls before recording.',
+          'warn'
+        );
+      void (async () => {
+        const done = await this.recordProductionNow(
+          {
+            kind: 'dough',
+            productId: dp.pid,
+            qty: Number(facts.actual),
+            recipeAmount: facts.amount ?? undefined,
+            target: null,
+            rejects: 0,
+            adj: {},
+            recipeVersion: snapshot?.recipe?.version ?? s.recipeVer[dp.pid] ?? 1,
+            dropNo: snapshot?.dropNo ?? s.dropNo
+          },
+          work.id
+        );
+        if (!done) return;
+        if (this.unmounted || this.state.role !== 'owner' || actor !== this.productionActorEpoch)
+          return;
+        // The record is in. If the sheet is still open, the engine's own bookkeeping (the sheet, the toast) runs against the
+        // quantities it showed; its own change to the dough is undone, because the database's record replaces it below.
+        this.finishProductionWork('doughPrep', work, () => {
+          if (this.completedProduction.get(work.id)?.fields.recipeAmount !== undefined)
+            this.setState({ doughPrep: null, sheet: null } as never);
+          else keep.confirmDough();
+        });
+        await this.refreshProduction([work.id]);
+      })();
+    };
+    eng.confirmBatch = () => {
+      const s = this.state as unknown as ProductionState;
+      const b = s.batch;
+      if (!b) return;
+      if (this.state.role !== 'owner') return void this.toast(PRODUCTION_COPY.ownerOnly, 'warn');
+      if (!this.productionClient) return void this.toast(STAFF_COPY.offline, 'warn');
+      const work = this.bindProductionWork('batch', b),
+        actor = this.productionActorEpoch;
+      const snapshot = this.productionDrafts.pool.get(work.id);
+      if (this.completedProduction.has(work.id)) {
+        this.clearAcknowledgedProductionProjection(work.id);
+        return;
+      }
+      if (
+        !this.pendingProduction.has(work.id) &&
+        !this.recipeRows?.some((row) => row.productId === b.pid)
+      )
+        return void this.toast(
+          'Saved recipe unavailable. Your counts are kept. Retry the saved recipe.',
+          'warn'
+        );
+      if (
+        snapshot &&
+        !this.pendingProduction.has(work.id) &&
+        this.productionSourceChanged(work.id, b.pid)
+      )
+        return void this.toast('The recipe changed. Your batch is kept for review.', 'warn');
+      void (async () => {
+        const adj: Record<string, number> = {};
+        for (const [name, steps] of Object.entries(b.adj ?? {})) if (steps) adj[name] = steps;
+        const done = await this.recordProductionNow(
+          {
+            kind: 'batch',
+            doughOnly: true,
+            productId: b.pid,
+            qty: b.actual,
+            target: b.target,
+            rejects: b.rejects || 0,
+            adj,
+            recipeVersion: snapshot?.recipe?.version ?? s.recipeVer[b.pid] ?? 1,
+            dropNo: snapshot?.dropNo ?? s.dropNo
+          },
+          work.id
+        );
+        if (!done) return;
+        if (this.unmounted || this.state.role !== 'owner' || actor !== this.productionActorEpoch)
+          return;
+        this.finishProductionWork('batch', work, () => keep.confirmBatch());
+        await this.refreshProduction([work.id]);
+      })();
+    };
+  }
+
+  // ------------------------------------------------------------------ E1: the owner's books
+
+  /**
+   * Reads the owner's books for the last 35 days and puts them in the engine's ledger (the P&L, Home profit and the expense
+   * list read it). The ledger is replaced, never added to: the engine's own entries for the same event (a receipt, a stall
+   * sale, an expense) are the database's lines by the time this returns. False when it could not be read.
+   */
+  async loadBooks(client: BooksClient | null): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted || this.state.role !== 'owner') return false;
+    if (client && client !== this.booksClient) {
+      this.retireBooksRead();
+      this.booksClient = client;
+    }
+    const use = client ?? this.booksClient;
+    if (!use) {
+      this.booksReadState = 'failed';
+      this.setState({});
+      return false;
+    }
+    const seq = ++this.booksLoadSeq,
+      actor = this.productionActorEpoch,
+      generation = this.productionRecovery.generation;
+    const latest = () =>
+      !this.unmounted &&
+      this.state.role === 'owner' &&
+      use === this.booksClient &&
+      seq === this.booksLoadSeq;
+    const current = () =>
+      latest() &&
+      actor === this.productionActorEpoch &&
+      generation === this.productionRecovery.generation;
+    const unavailable = () => {
+      if (latest()) {
+        this.booksReadState = 'failed';
+        this.setState({});
+      }
+    };
+    this.booksReadState = 'loading';
+    this.setState({});
+    let books: Books;
+    try {
+      const now = Date.now();
+      books = await fetchBooks(use, now - 35 * 86_400_000, now + 86_400_000);
+    } catch {
+      unavailable();
+      return false;
+    }
+    if (!current()) {
+      unavailable();
+      return false;
+    }
+    this.booksReadState = 'read';
+    this.booksRows = books;
+    this.setState({ ledger: engineLedger(books.lines) } as never);
+    return true;
+  }
+
+  private retireBooksRead(): void {
+    this.booksLoadSeq += 1;
+    this.booksReadState = 'idle';
+    this.booksRows = null;
+    this.setState({ ledger: [] } as never);
+  }
+
+  private installBooksOverrides(): void {
+    const eng = this as unknown as {
+      orderRevenue: (s: unknown) => number;
+      pnlTotals: (s: unknown) => {
+        revenue: number;
+        profit: number;
+        draw: number;
+        taxRate: number;
+        taxSetAside: number;
+        cash: number;
+        [key: string]: unknown;
+      };
+      ledgerIn: (s: unknown) => Array<{ kind?: string; cat?: string; amount?: number }>;
+      exportBooks: () => void;
+      recordDraw: (amount: unknown, note: string) => void;
+      closeDrop: () => void;
+    };
+    // Revenue is booked as each order is paid, so closing a drop books nothing more: the engine's toast would say "closed at 0".
+    const keepClose = eng.closeDrop;
+    eng.closeDrop = () => {
+      const original = this.toast;
+      this.toast = (message: string, tone?: 'ok' | 'warn') => {
+        const m = /^Drop (\d+) closed at .* Drop (\d+) is open/.exec(message);
+        return original(m ? BOOKS_COPY.dropClosed(m[1]!, m[2]!) : message, tone);
+      };
+      try {
+        keepClose();
+      } finally {
+        this.toast = original;
+      }
+    };
+    const keepDraw = eng.recordDraw;
+    this.engineDraw = keepDraw;
+    // Money the owner takes out is a book entry of its own (outside expenses); the engine's own toast and sheet still run.
+    eng.recordDraw = (amount, note) => {
+      if (!Number(amount)) return keepDraw(amount, note); // the engine says what is missing
+      void this.liveDraw(() => keepDraw(amount, note), amount, note);
+    };
+    // Revenue is each paid order in the books, so the engine's own count of the open drop's orders would count it twice.
+    eng.orderRevenue = () => 0;
+    // The ported engine recognizes Drops and Bazaar only. Include other real book revenue without guessing its sales channel.
+    const keepPnlTotals = eng.pnlTotals.bind(this);
+    eng.pnlTotals = (state) => {
+      const totals = keepPnlTotals(state);
+      if (!isLiveMode()) return totals;
+      const rows = eng.ledgerIn(state);
+      const otherRevenue = rows
+        .filter((row) => row.kind === 'revenue' && row.cat !== 'Drops' && row.cat !== 'Bazaar')
+        .reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+      if (!otherRevenue) return totals;
+      const revenue = totals.revenue + otherRevenue;
+      const profit = totals.profit + otherRevenue;
+      return {
+        ...totals,
+        revenue,
+        profit,
+        taxSetAside: Math.round((revenue * totals.taxRate) / 100),
+        cash: profit - totals.draw
+      };
+    };
+    eng.exportBooks = () => void this.liveExport();
+  }
+
+  /** A plain expense: recorded first (once, however often it is repeated), then the engine's own bookkeeping, then the books are read back. */
+  private async livePlainExpense(
+    run: () => void,
+    cat: string,
+    label: string,
+    amount: unknown,
+    date?: string
+  ): Promise<boolean> {
+    const client = this.booksClient;
+    if (this.state.role !== 'owner') {
+      this.toast(BOOKS_COPY.ownerOnly, 'warn');
+      return false;
+    }
+    if (!client) {
+      this.toast(STAFF_COPY.offline, 'warn');
+      return false;
+    }
+    const cents = pesosToCentavos(Number(amount));
+    const signature = JSON.stringify([cat, label, cents, date ?? null]);
+    const fields: ExpenseFields = this.pendingExpenses.get(signature) ?? {
+      id: crypto.randomUUID(),
+      category: cat,
+      memo: String(label ?? '').slice(0, 120),
+      amountCents: cents,
+      at: date ? this.entryAt(date) : Date.now()
+    };
+    const problem = expenseError(fields);
+    if (problem) {
+      this.toast(problem, 'warn');
+      return false;
+    }
+    this.pendingExpenses.set(signature, fields);
+    const outcome = await recordExpense(client, fields);
+    if (outcome !== 'offline') this.pendingExpenses.delete(signature);
+    if (outcome !== 'saved') {
+      this.toast(outcome === 'refused' ? BOOKS_COPY.refused : BOOKS_COPY.notSaved, 'warn');
+      return false;
+    }
+    this.withoutUndo(run);
+    await this.loadBooks(null);
+    return true;
+  }
+
+  private async liveDraw(
+    run: () => void,
+    amount: unknown,
+    note: string,
+    date?: string
+  ): Promise<boolean> {
+    const client = this.booksClient;
+    if (this.state.role !== 'owner') {
+      this.toast(BOOKS_COPY.ownerOnly, 'warn');
+      return false;
+    }
+    if (!client) {
+      this.toast(STAFF_COPY.offline, 'warn');
+      return false;
+    }
+    const cents = pesosToCentavos(Number(amount));
+    const memo = String(note ?? '').slice(0, 120);
+    const signature = JSON.stringify([memo, cents, date ?? null]);
+    const fields: DrawFields = this.pendingDraws.get(signature) ?? {
+      id: crypto.randomUUID(),
+      memo,
+      amountCents: cents,
+      at: date ? this.entryAt(date) : Date.now()
+    };
+    const problem = drawError(fields);
+    if (problem) {
+      this.toast(problem, 'warn');
+      return false;
+    }
+    this.pendingDraws.set(signature, fields);
+    const outcome = await recordDraw(client, fields);
+    if (outcome !== 'offline') this.pendingDraws.delete(signature);
+    if (outcome !== 'saved') {
+      this.toast(outcome === 'refused' ? BOOKS_COPY.refused : BOOKS_COPY.notSaved, 'warn');
+      return false;
+    }
+    this.withoutUndo(run);
+    await this.loadBooks(null);
+    return true;
+  }
+
+  private async openBooks(): Promise<void> {
+    if (!(await this.loadBooks(null)) || !this.booksRows)
+      return void this.toast(STAFF_COPY.offline, 'warn');
+    this.sheet('books', {});
+  }
+
+  private liveBooksVals(): OpsVals['liveBooks'] {
+    const sh = this.state.sheet as { kind?: string } | null;
+    const books = this.booksRows;
+    if (this.state.role !== 'owner' || sh?.kind !== 'books' || !books) return null;
+    return {
+      online: this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      basis: books.basis,
+      unpaid: this.unpaidVals(),
+      receipts: books.receipts.map((r) => ({
+        movementId: r.movementId,
+        label:
+          r.item +
+          ' · ' +
+          r.qty +
+          ' · ₱' +
+          (r.costCents / 100).toLocaleString('en-PH') +
+          (r.supplier ? ' · ' + r.supplier : '') +
+          ' · ' +
+          dayLabel(r.at)
+      })),
+      uncosted: books.uncosted.map((u) => ({
+        id: u.id,
+        item: u.item,
+        detail:
+          {
+            use: BOOKS_COPY.uncostedUse,
+            waste: BOOKS_COPY.uncostedWaste,
+            count: BOOKS_COPY.uncostedCount,
+            adjust: BOOKS_COPY.uncostedAdjust
+          }[u.kind] +
+          ' · ' +
+          u.qty +
+          ' ' +
+          u.unit +
+          (u.why ? ' · ' + u.why : '') +
+          ' · ' +
+          dayLabel(u.at)
+      })),
+      // S3: a bazaar that is not closed yet is left out of the books; this says so, with what is held back.
+      held: books.held.map((h) => ({
+        id: h.scheduledId,
+        name: h.name,
+        detail:
+          plural(h.count, 'record', 'records') +
+          ' · ' +
+          peso(h.revenueCents) +
+          ' taken · ' +
+          peso(h.expenseCents) +
+          ' spent at the till'
+      })),
+      setBasis: (b) => void this.liveSetBasis(b),
+      correct: (movementId, pesos) => void this.liveCorrect(movementId, pesos),
+      download: () => void this.liveExport(),
+      close: () => this.closeSheet()
+    };
+  }
+
+  /** The orders still owed money, from the owner's orders (null until they are read). */
+  private unpaidVals(): NonNullable<OpsVals['liveBooks']>['unpaid'] {
+    const orders = this.orderSync?.current();
+    if (!orders) return null;
+    const { rows, totalCents } = unpaidOrders(orders, Date.now());
+    return {
+      summary: rows.length
+        ? BOOKS_COPY.unpaidSummary(rows.length, peso(totalCents))
+        : BOOKS_COPY.unpaidNone,
+      rows: rows.map((r) => ({
+        id: r.id,
+        title: r.id + ' · ' + r.name,
+        detail:
+          (r.status === 'claimed'
+            ? BOOKS_COPY.unpaidClaimed
+            : r.status === 'balance'
+              ? BOOKS_COPY.unpaidBalance
+              : BOOKS_COPY.unpaidWaiting) +
+          ' · ' +
+          BOOKS_COPY.unpaidDays(r.days),
+        amount: peso(r.owedCents)
+      }))
+    };
+  }
+
+  private async liveSetBasis(basis: 'bought' | 'used'): Promise<void> {
+    const client = this.booksClient;
+    if (this.state.role !== 'owner') return void this.toast(BOOKS_COPY.ownerOnly, 'warn');
+    if (!client) return void this.toast(STAFF_COPY.offline, 'warn');
+    const outcome = await saveCostBasis(client, basis);
+    if (outcome !== 'saved')
+      return void this.toast(
+        outcome === 'refused' ? BOOKS_COPY.refused : BOOKS_COPY.notSaved,
+        'warn'
+      );
+    await this.loadBooks(null);
+    this.toast(BOOKS_COPY.basisSaved(basis));
+  }
+
+  private async liveCorrect(movementId: string, pesos: string): Promise<void> {
+    const client = this.booksClient;
+    if (this.state.role !== 'owner') return void this.toast(BOOKS_COPY.ownerOnly, 'warn');
+    if (!client) return void this.toast(STAFF_COPY.offline, 'warn');
+    const value = Number(pesos);
+    if (pesos.trim() === '' || !Number.isFinite(value) || value < 0)
+      return void this.toast(BOOKS_COPY.refused, 'warn');
+    const cents = pesosToCentavos(value);
+    const signature = JSON.stringify([movementId, cents]);
+    const fields: CorrectionFields = this.pendingCorrections.get(signature) ?? {
+      id: crypto.randomUUID(),
+      movementId,
+      costCents: cents,
+      at: Date.now()
+    };
+    const problem = correctionError(fields);
+    if (problem) return void this.toast(problem, 'warn');
+    this.pendingCorrections.set(signature, fields);
+    const outcome = await recordCostCorrection(client, fields);
+    if (outcome !== 'offline') this.pendingCorrections.delete(signature);
+    if (outcome !== 'saved')
+      return void this.toast(
+        outcome === 'refused' ? BOOKS_COPY.refused : BOOKS_COPY.notSaved,
+        'warn'
+      );
+    await this.loadBooks(null);
+    void this.loadStockCatalogue(null); // what was last paid follows the correction
+    this.toast(BOOKS_COPY.corrected);
+  }
+
+  /** The books for the last 13 months as a CSV download: read fresh from the database, so it is the same numbers as the screens. */
+  private async liveExport(fromMs?: number): Promise<void> {
+    const client = this.booksClient;
+    if (this.state.role !== 'owner') return void this.toast(BOOKS_COPY.ownerOnly, 'warn');
+    if (!client) return void this.toast(STAFF_COPY.offline, 'warn');
+    let books: Books;
+    try {
+      const now = Date.now();
+      books = await fetchBooks(client, fromMs ?? now - 396 * 86_400_000, now + 86_400_000);
+    } catch {
+      return void this.toast(STAFF_COPY.offline, 'warn');
+    }
+    try {
+      const blob = new Blob([booksCsv(books)], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'happy-cookie-books-' + manilaToday() + '.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      this.toast(BOOKS_COPY.downloaded);
+    } catch {
+      this.toast(BOOKS_COPY.downloadBlocked, 'warn');
+    }
+  }
+
+  // ------------------------------------------------------------------ B3: the owner's orders
+
+  /**
+   * Reads the owner's orders into `state.orders` (owner, staff screens; after the flavour list, so
+   * every ordered flavour is known to the screens). The engine's local order list plays no part in
+   * live mode; the demo books are never shown.
+   */
+  private clearOrderRead(clearList = true): void {
+    this.orderSync?.retire();
+    this.orderClient = null;
+    this.orderSync = undefined;
+    if (clearList) this.setState({ orders: [] } as never);
+  }
+
+  loadOrders(client: StaffOrderClient): Promise<boolean> {
+    if (!isLiveMode() || this.unmounted) return Promise.resolve(false);
+    this.clearOrderRead();
+    this.orderClient = client;
+    const role = this.state.role,
+      identity = this.staffIdentity,
+      actor = this.productionActorEpoch,
+      generation = this.productionRecovery.generation;
+    const current = () =>
+      !this.unmounted &&
+      this.state.role === role &&
+      identity === this.staffIdentity &&
+      actor === this.productionActorEpoch &&
+      generation === this.productionRecovery.generation &&
+      client === this.orderClient &&
+      sync === this.orderSync;
+    const sync = new StaffOrderSync(client, {
+      current,
+      apply: (orders) => {
+        if (current()) this.setState(() => (current() ? { orders } : null));
+      },
+      online: () => this.state.online && (typeof navigator === 'undefined' || navigator.onLine),
+      toast: (message, tone) => {
+        if (current()) this.toast(message, tone);
+      },
+      pickupDays: () => this.orderFlow?.rules?.pickupDays ?? [1, 4]
+    });
+    this.orderSync = sync;
+    return sync.load().then((loaded) => current() && loaded);
+  }
+
+  /** Customers order all day: the live gate reads the list again when the tab comes back. */
+  reloadOrders(): Promise<boolean> {
+    return this.orderSync?.load() ?? Promise.resolve(false);
+  }
+
+  private flavourName(pid: string): string {
+    const p = PRODUCTS.find((x) => x.id === pid) as { short?: string; name?: string } | undefined;
+    return p?.short ?? p?.name ?? pid;
+  }
+
+  private firstName(id: string): string {
+    const name = this.orderSync?.find(id)?.name ?? '';
+    return name.trim().split(/\s+/)[0] || 'The customer';
+  }
+
+  /** What was actually paid (a refund returns that), falling back to the total. */
+  private orderPesos(id: string): number {
+    const order = this.orderSync?.find(id);
+    return order ? centavosToPesos(order.paidCents ?? order.totalCents) : 0;
+  }
+
+  /** The client id of a swap that has not been settled, so a second tap after a lost reply is a replay. */
+  private swapIds = new Map<string, string>();
+
+  /**
+   * The Orders list: each row's pickup is the order's saved date and time (`saved-pickup.ts`), not
+   * the engine's next default drop window, which it computes from the clock for every order alike.
+   */
+  private liveOrderList(list: OpsVals['orderList']): OpsVals['orderList'] {
+    if (!list || !this.orderSync) return list;
+    const sync = this.orderSync;
+    return list.map((row) => {
+      const order = sync.find(String(row.id));
+      return {
+        ...row,
+        // The engine writes "1 cookies"; the count is the number it already printed.
+        count: singularCookies(String(row.count)),
+        pickup: savedPickupText(order?.pickupDate, order?.pickupWindow, 'short', order?.pickupLabel)
+      };
+    });
+  }
+
+  /**
+   * The order detail's link row: the ported values are a made-up address and a "Link copied." toast that
+   * copies nothing. Live mode shows the customer's real status link and really copies it. The pickup
+   * is the order's saved date and time, not the engine's next default drop window.
+   */
+  private liveOrderDetail(od: OpsVals['od']): OpsVals['od'] {
+    if (!od || !this.orderSync) return od;
+    const order = this.orderSync.find(String(od.id));
+    if (!order) return { ...od, pickup: savedPickupText(null, null, 'long') };
+    const origin = typeof window === 'undefined' ? '' : window.location.origin;
+    const link = statusLink(origin, order.statusToken);
+    // B4b: add-ons, boxes and the same-day extra as rows after the flavours. `orders.tsx` shows name, quantity
+    // and line total; `order-detail.tsx` also draws the flag button, so it says "Extra" and does nothing.
+    const extra = extraRows(order).map((r) => ({
+      name: r.name,
+      qty: r.qty + '×',
+      imgStyle: 'display:block;width:36px;height:36px;border-radius:9px;background:#F8F6F4',
+      price: PESO(r.linePesos / r.qty),
+      line: PESO(r.linePesos),
+      out: false,
+      inStock: true,
+      flagLabel: EXTRAS_COPY.extraFlag,
+      flag: () => this.toast(EXTRAS_COPY.extraFlagToast),
+      swap: () => undefined
+    }));
+    return {
+      ...od,
+      pickup: savedPickupText(order.pickupDate, order.pickupWindow, 'long', order.pickupLabel),
+      lines: [...(od.lines ?? []), ...extra],
+      link: link ?? '',
+      linkSent: link ? STAFF_COPY.linkHint : STAFF_COPY.linkErased,
+      copyLink: () => void this.copyMessage(link ?? '', link ? undefined : STAFF_COPY.linkErased)
+    };
+  }
+
+  /**
+   * One owner change, server first: nothing changes on screen until the database says so, then the
+   * list is read again (in `StaffOrderSync`). `done` words the success; the caller words the rest.
+   */
+  private async liveOrder(
+    run: (sync: StaffOrderSync) => Promise<StaffOutcome>,
+    done: string,
+    undo?: () => void
+  ): Promise<StaffOutcome | null> {
+    const sync = this.orderSync;
+    if (!sync?.loaded) {
+      this.toast(STAFF_COPY.notLoaded, 'warn');
+      return null;
+    }
+    const outcome = await run(sync);
+    if (sync !== this.orderSync || !sync.isCurrent()) return outcome;
+    if (outcome.kind === 'ok') {
+      this.closeSheet();
+      // HCB-006: saved, but the list could not be refreshed: say that, not the plain success.
+      if (outcome.refreshed) this.toast(done, 'ok', undo);
+      else this.toast(STAFF_COPY.savedNotRefreshed, 'warn');
+      if (this.state.role === 'owner') void this.loadBooks(null);
+    }
+    return outcome;
+  }
+
+  /**
+   * Live mode replaces the engine's order actions, which only edit the local list, with the ones
+   * that call the `staff_*` RPCs. The engine's local side effects are deliberately not repeated:
+   * packing does not check packaging stock (there is none in live mode until C1/C2), refunds and
+   * no-shows do not touch the local ledger or baked counts, no invoice is issued (F10 is open),
+   * and the capacity check on payment is the server's.
+   */
+  private installOrderOverrides(): void {
+    const eng = this as unknown as OrderActions;
+    eng.confirmPayment = (id, force) => void this.liveConfirm(id, force === true);
+    eng.rejectPayment = (id) => void this.liveOrder((s) => s.reject(id), STAFF_COPY.rejected);
+    eng.reopenOrder = (id) => {
+      if (this.orderSync?.find(id)?.payState === 'refunded')
+        return void this.toast(STAFF_COPY.reopenRefunded, 'warn');
+      void this.liveOrder((s) => s.reopen(id), STAFF_COPY.reopened);
+    };
+    eng.recordBalance = (id) =>
+      void this.liveOrder((s) => s.settle(id), STAFF_COPY.settled(this.firstName(id)));
+    eng.noShow = (id) =>
+      void this.liveOrder((s) => s.setStatus(id, 'No-show'), STAFF_COPY.noShow(this.firstName(id)));
+    eng.refundOrder = (id, ref) => {
+      // S1: a refund always carries the reference from the send-money receipt (the database refuses a blank one too).
+      if (!String(ref ?? '').trim()) return void this.toast(STAFF_COPY.refundNeedsRef, 'warn');
+      const amount = PESO(this.orderPesos(id));
+      void this.liveOrder(
+        (s) => s.refund(id, String(ref ?? '').trim()),
+        STAFF_COPY.refunded(amount)
+      );
+    };
+    eng.packOrder = (id) => {
+      const order = this.orderSync?.find(id);
+      if (order?.state === 'Payment review') return void this.toast(STAFF_COPY.packUnpaid, 'warn');
+      if (order?.items.some((i) => i.unavailable))
+        return void this.toast(
+          'Settle the unavailable flavour with ' + this.firstName(id) + ' before packing this one.',
+          'warn'
+        );
+      void (async () => {
+        // C2: packing takes the packaging off stock, once per order (the database answers a repeat without taking more). A
+        // helper's pack still moves the order on: recording stock is the owner's, like every stock change.
+        let ranShort = '';
+        const client = this.productionClient;
+        if (this.state.role === 'owner' && client) {
+          const st = this.state as unknown as {
+            dropNo: number;
+            orders: Array<{ id: string; drop?: number | null }>;
+          };
+          // An order for another week carries no drop number of ours (-1): its cookies are still taken from what is baked now.
+          const orderDrop = st.orders.find((o) => o.id === id)?.drop;
+          const dropNo = typeof orderDrop === 'number' && orderDrop >= 0 ? orderDrop : st.dropNo;
+          const result = await recordPack(client, id, dropNo);
+          if (result.outcome !== 'saved') {
+            this.toast(
+              result.outcome === 'offline' ? PRODUCTION_COPY.packNotSaved : PRODUCTION_COPY.refused,
+              'warn'
+            );
+            return;
+          }
+          if (result.shortfall.length)
+            ranShort = PRODUCTION_COPY.ranShort(
+              result.shortfall.map((x) => x.name.toLowerCase()).join(' and ')
+            );
+        }
+        await this.liveOrder(
+          (s) => s.setStatus(id, 'Ready'),
+          STAFF_COPY.packed(this.firstName(id)) + ranShort
+        );
+        if (this.state.role === 'owner' && client) await this.refreshProduction();
+      })();
+    };
+    eng.collectOrder = (id) => {
+      const undo = () =>
+        void this.liveOrder((s) => s.setStatus(id, 'Ready'), STAFF_COPY.packed(this.firstName(id)));
+      void this.liveOrder(
+        (s) => s.setStatus(id, 'Completed'),
+        STAFF_COPY.collected(this.firstName(id)),
+        undo
+      );
+    };
+    eng.flagLine = (id, pid) => {
+      const on = !this.orderSync?.find(id)?.items.some((i) => i.productId === pid && i.unavailable);
+      void this.liveOrder(
+        (s) => s.flag(id, pid, on),
+        on
+          ? STAFF_COPY.flagged(this.flavourName(pid), this.firstName(id))
+          : STAFF_COPY.unflagged(this.flavourName(pid))
+      );
+    };
+    eng.clearContact = (id) => {
+      const sync = this.orderSync;
+      const flagged = (sync?.find(id)?.items ?? []).filter((i) => i.unavailable);
+      void (async () => {
+        let refreshed = true;
+        for (const item of flagged) {
+          const outcome = await sync?.flag(id, item.productId, false);
+          if (sync !== this.orderSync || !sync?.isCurrent() || outcome?.kind !== 'ok') return;
+          refreshed = refreshed && outcome.refreshed;
+        }
+        if (sync !== this.orderSync || !sync?.isCurrent()) return;
+        if (refreshed) this.toast(STAFF_COPY.cleared);
+        else this.toast(STAFF_COPY.savedNotRefreshed, 'warn');
+      })();
+    };
+    eng.replaceLine = (id, from, to) => {
+      if (from === to) return void this.toast('Pick a different flavour to swap in.', 'warn');
+      const qty = (this.orderSync?.find(id)?.items ?? [])
+        .filter((i) => i.productId === from)
+        .reduce((n, i) => n + i.qty, 0);
+      const sync = this.orderSync;
+      const key = JSON.stringify([
+        this.staffIdentity?.business,
+        this.staffIdentity?.userId,
+        id,
+        from,
+        to
+      ]);
+      const clientId = this.swapIds.get(key) ?? globalThis.crypto.randomUUID();
+      this.swapIds.set(key, clientId);
+      void this.liveOrder(
+        (s) => s.swap(id, from, to, clientId),
+        STAFF_COPY.swapped(qty, this.flavourName(from), this.flavourName(to))
+      ).then((outcome) => {
+        // Only a lost reply keeps the id: the next tap must be a replay, not a second swap.
+        if (
+          sync === this.orderSync &&
+          sync?.isCurrent() &&
+          outcome?.kind !== 'offline' &&
+          this.swapIds.get(key) === clientId
+        )
+          this.swapIds.delete(key);
+        if (sync === this.orderSync && sync?.isCurrent() && outcome?.kind === 'capacity')
+          this.toast(STAFF_COPY.noRoom(outcome.left), 'warn');
+      });
+    };
+    // Baking is not a status the live app records: a baked flavour's orders stay Confirmed until they
+    // are packed (Ready), so the bake list keeps counting them until then.
+    eng.markBaking = (_pid, s0) => (s0 ?? (this.state as unknown as { orders: unknown[] })).orders;
+    const orders = () =>
+      this.state.orders as Array<{ status: string; day?: string; items: Record<string, number> }>;
+    // This pickup week only: an order for a later week (the lead window is up to 14 days) is not baked yet.
+    const counted = () =>
+      orders().filter((o) => BAKED_FOR.includes(o.status) && eng.inDrop(this.state, o));
+    eng.demand = (pid) => counted().reduce((n, o) => n + (o.items[pid] || 0), 0);
+    eng.demandDay = (pid, day) =>
+      counted()
+        .filter((o) => o.day === day)
+        .reduce((n, o) => n + (o.items[pid] || 0), 0);
+  }
+
+  /** The paid tick. A lapsed unpaid order that no longer fits its week opens the ported overage sheet. */
+  private async liveConfirm(id: string, force: boolean): Promise<void> {
+    const sync = this.orderSync;
+    const order = this.orderSync?.find(id);
+    const first = this.firstName(id);
+    const outcome = await this.liveOrder((s) => s.confirm(id, force), STAFF_COPY.paid(first));
+    if (sync !== this.orderSync || !sync?.isCurrent()) return;
+    if (outcome?.kind === 'capacity') {
+      const n = (order?.items ?? []).reduce((total, i) => total + i.qty, 0);
+      this.sheet('overage', {
+        id,
+        over: Math.max(1, n - outcome.left),
+        left: outcome.left,
+        n,
+        name: order?.name ?? first
+      });
+    }
+  }
+
+  private openMessages(): void {
+    this.sheet('ordermessages', {});
+    void this.reloadOrders();
+  }
+
+  /** The messages sheet: a status link and a text to copy for each open order (live owner). */
+  private liveMessagesVals(): OpsVals['liveMessages'] {
+    const sh = this.state.sheet as FlavourSheetState | null;
+    if (this.state.role !== 'owner' || sh?.kind !== 'ordermessages') return null;
+    const origin = typeof window === 'undefined' ? '' : window.location.origin;
+    const rows = (this.orderSync?.current() ?? []).flatMap((o) =>
+      messagesFor(o, origin, (pid) => this.flavourName(pid)).map((m) => ({
+        key: m.key,
+        order: o.id,
+        name: o.name,
+        label: m.label,
+        text: m.text,
+        details: extraDetails(o, true),
+        copy: () => void this.copyMessage(m.text)
+      }))
+    );
+    return { rows, close: () => this.closeSheet() };
+  }
+
+  private async copyMessage(text: string, none?: string): Promise<void> {
+    if (!text) return void this.toast(none ?? MESSAGE_SHEET.copyFailed, 'warn');
+    try {
+      await navigator.clipboard.writeText(text);
+      this.toast(MESSAGE_SHEET.copied);
+    } catch {
+      this.toast(MESSAGE_SHEET.copyFailed, 'warn');
+    }
+  }
+
+  /**
+   * The live owner's All tools. No markup edit: All tools already maps `toolGroups`.
+   *
+   * UX review, proposal 1: the four flavour and recipe entries were spread over Kitchen
+   * (Recipes) and Business (Products, Menu & flavours, Recipe drafts). They sit together in
+   * one "Menu and recipes" group after Kitchen, each with a line saying what it is for.
+   *
+   * Keep every description short. The ported card shows it on one line, and a line wider
+   * than the card stretches the whole group past the edge of a phone instead of being cut
+   * (UX review, finding 11). Measured at 360 px wide: about 276 px, roughly 50 characters.
+   */
+  private liveToolGroups(groups: OpsVals['toolGroups']): OpsVals['toolGroups'] {
+    const ported = (label: string) =>
+      groups.flatMap((g) => g.items).find((item) => item.label === label);
+    const products = ported('Products');
+    const recipes = ported('Recipes');
+    const menuGroup: OpsVals['toolGroups'][number] = {
+      title: MENU_TOOLS.title,
+      items: [
+        {
+          icon: this.IC.cookie,
+          label: 'Menu & flavours',
+          // HCB-004 a2: the editor lists what the read brought in, so until one has answered there is no count to
+          // give (unknown is not "0 flavours"); the kept offline copy is not that list.
+          sub:
+            this.flavourSync && !flavoursRead.get().everRead
+              ? STAFF_COPY.homeProductsNotRead
+              : plural(this.flavourSync?.current().length ?? 0, 'flavour', 'flavours') +
+                MENU_TOOLS.flavours,
+          badge: null,
+          go: () => this.openFlavourList()
+        },
+        ...(products ? [{ ...products, sub: MENU_TOOLS.products }] : []),
+        ...(recipes ? [{ ...recipes, sub: MENU_TOOLS.recipes }] : []),
+        {
+          icon: this.IC.cookie,
+          label: 'Recipe drafts',
+          sub: MENU_TOOLS.drafts,
+          badge: null,
+          go: () => void this.openRecipeDrafts()
+        }
+      ]
+    };
+    const live = groups.map((g) =>
+      g.title === 'Business'
+        ? {
+            ...g,
+            items: [
+              ...g.items,
+              // Off the phone dock since proposal 3, so it needs an entry here.
+              {
+                icon: SALES_LOG_ICON,
+                label: 'Sales log',
+                sub: 'Every sale recorded',
+                badge: null,
+                go: () => this.go('sales')
+              },
+              {
+                icon: this.IC.cookie,
+                label: 'Payment methods',
+                sub: 'Each way to pay: numbers and QR codes',
+                badge: null,
+                go: () => this.openPayments()
+              },
+              {
+                icon: this.IC.cookie,
+                label: 'Shop texts',
+                sub: 'Shop name, contact line, tagline and footer',
+                badge: null,
+                go: () => void this.openShopTexts()
+              },
+              {
+                icon: this.IC.cookie,
+                label: 'Order rules',
+                sub: 'Pickup days, lead time, unpaid holds, campus slot',
+                badge: null,
+                go: () => void this.openOrderRules()
+              },
+              {
+                icon: this.IC.cookie,
+                label: SCHEDULED_COPY.title,
+                sub: 'Your bazaars: on now, coming up and past',
+                badge: null,
+                go: () => this.openBazaarEvents()
+              },
+              {
+                icon: this.IC.cookie,
+                label: BOOKS_COPY.title,
+                sub: BOOKS_COPY.sub,
+                badge: null,
+                go: () => void this.openBooks()
+              },
+              {
+                icon: this.IC.cookie,
+                label: STOCK_COPY.itemsTitle,
+                sub: STOCK_COPY.itemsSub,
+                badge: null,
+                go: () => void this.openStockItems()
+              },
+              {
+                icon: this.IC.cookie,
+                label: STOCK_COPY.suppliersTitle,
+                sub: STOCK_COPY.suppliersSub,
+                badge: null,
+                go: () => void this.openStockSuppliers()
+              },
+              {
+                icon: this.IC.cookie,
+                label: EXTRAS_COPY.title,
+                sub: 'Box sizes, add-ons, sampler, same-day extra',
+                badge: null,
+                go: () => void this.openOrderExtras()
+              },
+              {
+                icon: this.IC.cookie,
+                label: MESSAGE_SHEET.title,
+                sub: 'A status link and a message for each open order',
+                badge: null,
+                go: () => this.openMessages()
+              }
+            ]
+          }
+        : g
+    );
+    const rest = live
+      .map((g) => ({
+        ...g,
+        items: g.items.filter((item) => item !== products && item !== recipes)
+      }))
+      .filter((g) => g.items.length > 0);
+    const at = rest.findIndex((g) => g.title === 'Kitchen') + 1;
+    return [...rest.slice(0, at), menuGroup, ...rest.slice(at)];
+  }
+
+  /**
+   * Every All tools entry the live owner has, the engine's 21 and the live 12, in one list.
+   * The function map (src/lib/nav/function-map.ts) is checked against it, so an entry
+   * added here with no home in the map fails tests/unit/function-map.test.tsx.
+   */
+  liveToolEntries(): OpsVals['toolGroups'][number]['items'] {
+    return this.liveToolGroups(super.renderVals().toolGroups ?? []).flatMap((g) => g.items);
+  }
+
+  /**
+   * All tools for the live owner, kept for its address only (nothing links to it since B1):
+   * every entry under its one home, in the map's order, the retired entry left out.
+   */
+  private liveToolIndex(tools: ToolItem[]): OpsVals['toolGroups'] {
+    return PLACES.filter((place) => place.home !== 'retired')
+      .map((place) => {
+        const tab = tabOf(place.home);
+        return {
+          title: tab ? tab.label + ' · ' + place.label : place.label,
+          items: place.entries.flatMap((entry) =>
+            tools.filter((tool) => tool.label === entry.label)
+          )
+        };
+      })
+      .filter((group) => group.items.length > 0);
+  }
+
+  /** The tab a place is shown under. Account has no button of its own yet, so it sits on Home. */
+  private liveTabOf(place: Place | undefined) {
+    if (!place) return undefined;
+    return tabOf(place.home) ?? (place.home === 'account' ? TABS[0] : undefined);
+  }
+
+  /** The count the engine shows on its own nav item for a screen (orders to check, items to buy). */
+  private navCount(vals: OpsVals, screen: ScreenKey | null): number {
+    const item = (vals.dockNav ?? []).find((nav) => (nav as { key?: unknown }).key === screen);
+    return Number(item?.badge) || 0;
+  }
+
+  /**
+   * B1 (final-plan.md section 8). The live owner's phone dock and the sidebar show the five
+   * tabs of the function map, each opening its first place and marked while any screen of
+   * its places is open. A helper's or support's dock keeps its own, shorter list. The
+   * visible label is one guarded line of shell markup (protected exception, UX review
+   * proposal 3); everything else is here and in src/lib/nav/function-map.ts.
+   */
+  private liveDock(
+    vals: OpsVals,
+    tools: ToolItem[] | null
+  ): Pick<OpsVals, 'dockNav' | 'dockPillStyle' | 'railNav' | 'railPillStyle'> {
+    const salesIcon = <T extends { label: unknown; icon: string }>(item: T): T =>
+      item.label === 'Sales log' ? { ...item, icon: SALES_LOG_ICON } : item;
+    if (!tools)
+      return {
+        railNav: (vals.railNav ?? []).map(salesIcon),
+        railPillStyle: vals.railPillStyle,
+        dockNav: (vals.dockNav ?? []).map(salesIcon),
+        dockPillStyle: vals.dockPillStyle
+      };
+    const here = this.liveTabOf(placeOfRoute(String(this.state.screen)))?.id;
+    const icon = (screen: ScreenKey) =>
+      (vals.dockNav ?? []).find((nav) => (nav as { key?: unknown }).key === screen)?.icon ?? '';
+    const nav = TABS.map((tab) => ({
+      key: tab.id,
+      icon: tab.id === 'cafe' ? CAFE_ICON : icon(tab.id === 'make' ? 'bake' : tab.screen),
+      label: tab.label,
+      badge:
+        placesOf(tab.id).reduce((sum, place) => sum + this.navCount(vals, place.screen), 0) +
+        // What All tools carried on the dock (the backup flag, unsent sales), with Account.
+        (tab.id === 'home' ? this.navCount(vals, 'more') : 0),
+      active: tab.id === here,
+      go: () =>
+        tab.id === 'bazaar' && this.canLeaveTill() ? this.openBazaarEvents() : this.go(tab.screen)
+    }));
+    const at = nav.findIndex((item) => item.active);
+    // The engine's own pill styles, recomputed for this list.
+    return {
+      dockNav: nav,
+      railNav: nav,
+      dockPillStyle:
+        'position: absolute; top: 6px; bottom: 6px; left: 6px; width: calc((100% - 12px) / ' +
+        nav.length +
+        '); border-radius: 16px; background: #FDEDE5; transform: translate3d(' +
+        (at < 0 ? 0 : at * 100) +
+        '%, 0, 0); opacity: ' +
+        (at < 0 ? '0' : '1') +
+        '; transition: transform .3s cubic-bezier(.34,1.08,.4,1), opacity .18s ease; pointer-events: none',
+      railPillStyle:
+        'position: absolute; left: 0; right: 0; top: 0; height: 42px; border-radius: 10px; background: #FDEDE5; box-shadow: inset 3px 0 0 #E75F23; transform: translate3d(0, ' +
+        (at < 0 ? 0 : at * 44) +
+        'px, 0); opacity: ' +
+        (at < 0 ? '0' : '1') +
+        '; transition: transform .3s cubic-bezier(.34,1.08,.4,1), opacity .18s ease; pointer-events: none'
+    };
+  }
+
+  /**
+   * The owner's sub-tab strip: the places of the open tab, and the open place's entries
+   * when it holds more than one. Null where there is no tab to show (the bell, customer
+   * pages, the retired addresses), on a screen the role is denied, and in the engine's
+   * focus mode (selling, a batch, a count), where the top bar is hidden too.
+   *
+   * Bazaar Mode is left exactly as it was once an event is on this phone, at any stage:
+   * the strip shows above the bookings list only, which is where Bazaar events is reached.
+   * The saved copy counts too (`readBazaar`), so a phone the gate has opened offline on
+   * Bazaar Mode alone shows no strip even before the engine has put the event back.
+   */
+  private liveTabs(vals: OpsVals, tools: ToolItem[]): LiveTabs | null {
+    const screen = String(this.state.screen);
+    const place = placeOfRoute(screen);
+    const tab = this.liveTabOf(place);
+    if (!place || !tab || vals.denied || !vals.showTopBar) return null;
+    // Bazaar has one destination; its list and child pages supply their own contextual Back.
+    if (screen === 'bazaar') return null;
+    const tool = (label: string | undefined) => tools.find((item) => item.label === label);
+    const row = [
+      ...placesOf(tab.id),
+      ...(tab.id === 'home' ? PLACES.filter((item) => item.home === 'account') : [])
+    ];
+    // Bazaar Mode and Bazaar events open the same screen, and this strip is drawn only while no event is on the phone,
+    // where that screen is the events hub (U3): that is the entry to mark.
+    const opened =
+      place.id === 'bazaar'
+        ? place.entries.find((entry) => entry.label === 'Bazaar events')
+        : place.entries.find((entry) => entry.screen === screen);
+    return {
+      label: tab.label,
+      places: row.flatMap((item) => {
+        const target = item.screen;
+        const own = tool(item.entries[0]?.label);
+        const pages = item.entries.filter((entry) => entry.section && entry.screen);
+        return [
+          {
+            id: item.id,
+            label: item.label,
+            active: item.id === place.id && !pages.some((entry) => entry.screen === screen),
+            badge:
+              item.home === 'account'
+                ? this.navCount(vals, 'more') || null
+                : this.navCount(vals, target) || null,
+            // A place with no screen of its own yet opens its one entry.
+            go: target ? () => this.go(target) : () => own?.go()
+          },
+          ...pages.map((entry) => ({
+            id: entry.label,
+            label: entry.label,
+            active: entry.screen === screen,
+            badge: this.navCount(vals, entry.screen ?? null) || null,
+            go: () => this.go(entry.screen as ScreenKey)
+          }))
+        ];
+      }),
+      placeLabel: place.label,
+      entries:
+        place.entries.length > 1
+          ? place.entries.flatMap((entry) => {
+              if (entry.withinProduct) return [];
+              const item = tool(entry.label);
+              return item
+                ? [
+                    {
+                      id: entry.label,
+                      label: entry.label,
+                      active: entry === opened,
+                      primary: entry.screen === place.screen || entry.section === true,
+                      badge: item.badge || null,
+                      go: () => item.go()
+                    }
+                  ]
+                : [];
+            })
+          : []
+    };
+  }
+
+  /** Capture the saved Shopping plan without starting work or replacing independent drafts. */
+  private shoppingProductionAction(
+    rows: Array<{ productId: string; cookies: number }>
+  ): (() => void) | null {
+    const scope = this.productionRecovery.scope,
+      client = this.productionClient;
+    const actor = this.productionActorEpoch,
+      dropNo = this.state.dropNo;
+    if (
+      !isLiveMode() ||
+      this.state.screen !== 'grocery' ||
+      !scope ||
+      !client ||
+      !this.productionWritable() ||
+      this.recipeReaderState !== 'read'
+    )
+      return null;
+    const proposal = {
+      source: 'shopping' as const,
+      rows: rows.map((row) => ({
+        productId: row.productId,
+        quantity: String(row.cookies),
+        version: this.recipeRows?.find((recipe) => recipe.productId === row.productId)?.version ?? 0
+      }))
+    };
+    if (!proposal.rows.length || proposal.rows.some((row) => row.version === 0)) return null;
+    return () => {
+      if (
+        this.unmounted ||
+        this.state.screen !== 'grocery' ||
+        actor !== this.productionActorEpoch ||
+        client !== this.productionClient ||
+        dropNo !== this.state.dropNo ||
+        scope.userId !== this.productionRecovery.scope?.userId ||
+        scope.business !== this.productionRecovery.scope?.business ||
+        !this.productionWritable() ||
+        this.recipeReaderState !== 'read'
+      )
+        return;
+      if (proposal.rows.some((row) => Number(row.quantity) > MAX_PRODUCTION_QUANTITY))
+        return this.toast(
+          `Shopping plan kept. Make accepts at most ${MAX_PRODUCTION_QUANTITY.toLocaleString('en-PH')} cookies per product in one production entry.`,
+          'warn'
+        );
+      const result = productionHandoff(
+        this.productionEntry,
+        proposal,
+        this.liveProductionView().start?.products ?? [],
+        Number(dropNo)
+      );
+      if (result.error) return this.toast(result.error, 'warn');
+      this.productionEntry = result.entry;
+      this.productionEntryGeneration += 1;
+      this.go('bake');
+      this.setState({});
+    };
+  }
+
+  /** Start production from either Make page: entry is drawn on Production, so it opens there. */
+  private startProductionFromMake(productId?: string, cookies?: number): void {
+    if (!isLiveMode() || this.unmounted || this.state.role !== 'owner') return;
+    if (productId) {
+      if (!this.productionWritable() || this.recipeReaderState !== 'read') return;
+      const recipe = this.recipeRows?.find((row) => row.productId === productId);
+      if (!recipe) return;
+      const result = productionHandoff(
+        this.productionEntry,
+        {
+          source: 'recipe',
+          rows: [{ productId, quantity: String(cookies ?? recipe.yield), version: recipe.version }]
+        },
+        this.liveProductionView().start?.products ?? [],
+        Number(this.state.dropNo)
+      );
+      if (result.error) return this.toast(result.error, 'warn');
+      this.productionEntry = result.entry;
+      this.productionEntryGeneration += 1;
+      this.go('bake');
+      this.setState({});
+      return;
+    }
+    if (this.state.screen !== 'bake') this.go('bake');
+    this.setState({}, () => {
+      const start = this.state.screen === 'bake' ? this.liveProductionView().start : null;
+      start?.open();
+    });
+  }
+
+  /** The products screen's "Edit price" opens the live flavour editor instead of the ported sheet. */
+  private liveProductRows(rows: OpsVals['productRows']): OpsVals['productRows'] {
+    return rows.map((row, i) => {
+      const pid = PRODUCTS[i]?.id;
+      return pid
+        ? {
+            ...row,
+            archived: !!this.flavourSync?.current().find((flavour) => flavour.id === pid)
+              ?.archived_at,
+            ...this.makeDesk.productFields(pid),
+            edit: () => this.openFlavourEditor(pid, true),
+            returnRecipeFocus: this.state.liveProductReturnId === pid,
+            returnEditFocus: this.state.liveProductEditReturnId === pid,
+            goRecipe: () => {
+              if (!isLiveMode() || this.unmounted || this.state.role !== 'owner') return;
+              this.setState(
+                { liveRecipeTarget: pid, liveProductReturnId: null, liveProductEditReturnId: null },
+                () => {
+                  if (!this.unmounted && this.state.role === 'owner') row.goRecipe();
+                }
+              );
+            },
+            costText: this.costKnown(pid) ? row.costText : COST_COPY.pending
+          }
+        : row;
+    });
+  }
+
+  private liveRecipeBookView(): NonNullable<OpsVals['liveRecipes']> {
+    const book = this.recipeBook.vals();
+    const item = book.items.find((row) => row.id === this.state.liveRecipeTarget);
+    if (!item) return book;
+    const recipe = this.recipeRows?.find((row) => row.productId === item.id);
+    const hasLines = !!recipe?.lines.length;
+    const actor = this.productionActorEpoch;
+    const dropNo = this.state.dropNo;
+    const generation = this.recipeEditorGeneration();
+    const current = () =>
+      !this.unmounted &&
+      actor === this.productionActorEpoch &&
+      generation === this.recipeEditorContext?.generation &&
+      this.state.role === 'owner' &&
+      this.state.screen === 'recipes' &&
+      this.state.liveRecipeTarget === item.id;
+    return {
+      ...book,
+      recipePage: {
+        id: item.id,
+        name: item.name,
+        photo: item.photo,
+        state: this.recipeReaderState,
+        yieldText: hasLines ? singularCookies(`Makes ${recipe.yield} cookies`) : null,
+        versionText: hasLines ? `Version ${recipe.version}` : null,
+        savedYield: hasLines ? recipe.yield : 0,
+        createRecipe:
+          !recipe && this.recipeReaderState === 'read'
+            ? () => {
+                if (
+                  !current() ||
+                  this.recipeReaderState !== 'read' ||
+                  this.recipeRows?.some((row) => row.productId === item.id)
+                )
+                  return false;
+                (this as unknown as { openRecipe: (id: string) => void }).openRecipe(item.id);
+                return true;
+              }
+            : undefined,
+        rows: (recipe?.lines ?? []).map((line) => ({
+          name: line.name,
+          amountText: formatQuantity(line.qty, line.unit),
+          qty: line.qty,
+          unit: line.unit,
+          kind: line.kind ?? null
+        })),
+        stock: this.stockCatalogue?.items
+          .filter((row) => row.active)
+          .map((row) => ({
+            name: row.name,
+            unit: row.unit,
+            onHand: row.onHand,
+            counted: !!row.lastCounted,
+            count: () => this.startItemCount(row)
+          })),
+        startProduction: (cookies) => {
+          if (
+            current() &&
+            recipe &&
+            this.recipeReaderState === 'read' &&
+            this.state.dropNo === dropNo &&
+            this.recipeRows?.find((row) => row.productId === item.id) === recipe
+          )
+            this.startProductionFromMake(item.id, cookies);
+        },
+        discardEdit: () => {
+          if (!current()) return;
+          this.setState((s) => {
+            const state = s as unknown as RecipeState;
+            const base = state.recipeBase?.[item.id];
+            if (!base) return null as never;
+            const dirty = { ...state.recipeDirty };
+            delete dirty[item.id];
+            return {
+              recipes: { ...state.recipes, [item.id]: structuredClone(base) },
+              recipeDirty: dirty
+            } as never;
+          });
+        },
+        back: () => {
+          if (current())
+            this.setState({ liveRecipeTarget: null, liveProductReturnId: item.id }, () =>
+              this.go('products')
+            );
+        },
+        refresh: () => {
+          if (current()) void this.loadRecipes(null);
+        }
+      }
+    };
+  }
+
+  /** Whether a flavour's cost per cookie is known and may be shown as a figure (not while it is being edited, not part of it). */
+  private costKnown(pid: unknown): boolean {
+    return this.completeRecipeCost(pid) && this.cookieCost(String(pid)) !== null;
+  }
+
+  /**
+   * P&L margins: a flavour whose cost is unknown shows "Cost pending" instead of a margin built from a part cost. The caption says
+   * how many uses of stock the books could not cost (on the "when used" basis), within the period it covers.
+   */
+  private livePnl(pl: OpsVals['pl']): OpsVals['pl'] {
+    if (!pl || this.state.role !== 'owner') return pl;
+    const uncosted = this.booksRows?.uncosted ?? [];
+    const period = this as unknown as { periodFrom: (s: OpsEngineState) => number };
+    const from = period.periodFrom(this.state as unknown as OpsEngineState);
+    const count = uncosted.filter((u) => u.at >= from && u.at <= Number(this.state.now)).length;
+    return {
+      ...pl,
+      periodText: pl.periodText + (count > 0 ? COST_COPY.notCosted(count) : ''),
+      marginRows: (pl.marginRows ?? []).map((row) => {
+        const pid = PRODUCTS.find((p) => p.short === row.name)?.id;
+        if (!pid || this.cookieCost(pid) !== null) return row;
+        return {
+          ...row,
+          eachText: COST_COPY.pending,
+          madeText: COST_COPY.pending,
+          pctText: '—',
+          barStyle: 'width:4%'
+        };
+      })
+    };
+  }
+
+  /** The bazaar close-out: cost of goods and profit read "Cost pending" when any flavour sold has no cost, and that is not a loss. */
+  /** The engine's "1 cookies" in the close-out summary (see `singularCookies`). */
+  private singularCloseout(c: OpsVals['bzCloseout']): OpsVals['bzCloseout'] {
+    return c
+      ? {
+          ...c,
+          opening: singularCookies(String(c.opening)),
+          sold: singularCookies(String(c.sold)),
+          returned: singularCookies(String(c.returned))
+        }
+      : c;
+  }
+
+  private liveCloseout(closeout: OpsVals['bzCloseout']): OpsVals['bzCloseout'] {
+    if (!closeout || this.state.role !== 'owner') return closeout;
+    const unknown = (this.state.sales as EventSale[]).some((sale) =>
+      Object.keys(sale.items).some((k) => (sale.items[k] ?? 0) > 0 && this.cookieCost(k) === null)
+    );
+    return unknown
+      ? { ...closeout, cogs: COST_COPY.pending, profit: COST_COPY.pending, profitOk: true }
+      : closeout;
+  }
+
+  /** Partial recipes and missing prices cannot be presented as a complete zero-peso cost. */
+  private completeRecipeCost(pid: unknown): boolean {
+    if (this.costsFromDatabase()) {
+      const row = this.recipeCosts.get(String(pid));
+      return this.costReads === 'ok' && !!row && row.complete && row.perCookie !== null;
+    }
+    const recipe = this.recipeRows?.find((row) => row.productId === pid);
+    const catalogue = this.stockCatalogue;
+    if (!recipe?.lines.length || !catalogue) return false;
+    const priced = (name: string, unit?: string) => {
+      const item = catalogue.items.find((row) => row.active && row.name === name);
+      if (!item || (unit !== undefined && item.unit !== unit)) return false;
+      const paid = (
+        this.state.paid as Record<string, { price: number; qty: number }> | undefined
+      )?.[name];
+      return (
+        !!(paid && paid.qty > 0 && paid.price > 0) ||
+        catalogue.prices.some(
+          (row) =>
+            row.active &&
+            row.itemName === name &&
+            item.packSize !== null &&
+            item.packSize > 0 &&
+            row.packLabel === item.packLabel &&
+            catalogue.suppliers.some(
+              (supplier) => supplier.id === row.supplierId && supplier.active
+            )
+        )
+      );
+    };
+    // A database before B3b: every line is priced, and so is every item the engine's packaging cost asks for (found by running it, not by name).
+    const names: string[] = [];
+    this.capturePackNames = names;
+    try {
+      this.engineCost?.packCostPerCookie();
+    } finally {
+      this.capturePackNames = null;
+    }
+    return (
+      recipe.lines.every((line) => priced(line.name, line.unit)) &&
+      names.length > 0 &&
+      names.every((name) => priced(name))
+    );
+  }
+
+  /**
+   * The frame's live-only screen slot (B1, the project notes). When a
+   * redesigned screen is registered for the open key, the slot draws it and the ported
+   * screen's own flag goes off, so the two never render together. Never for a screen the
+   * engine denies to the role: the registered screen must not be a way round `canSee`.
+   * The same slot carries the owner's sub-tab strip (`liveTabs`), above either screen.
+   */
+  private liveScreenVals(
+    vals: OpsVals,
+    tools: ToolItem[] | null
+  ): Pick<OpsVals, 'liveScreen' | 'screens'> {
+    const key = this.state.screen as ScreenKey;
+    const replaced = !vals.denied && !!liveScreenFor(key);
+    const tabs = tools ? this.liveTabs(vals, tools) : null;
+    const till = vals.denied ? null : this.liveHomeTill();
+    const next = vals.denied || till ? null : this.liveHomeNext();
+    return {
+      liveScreen:
+        replaced || tabs || till || next
+          ? { screen: replaced ? key : null, tabs, till, next }
+          : null,
+      screens: replaced ? { ...vals.screens, [key]: false } : vals.screens
+    };
+  }
+
+  /**
+   * U2: Home's Bazaar card and the "Back to the till" banner. While this phone holds a started day, every screen but the
+   * till (and the customer pages) gets the way back; the money in it follows the helper rule (`helperMoneyView`).
+   */
+  private liveHomeTill(): LiveHomeTill | null {
+    const event = this.state.event as LiveEvent | null;
+    const screen = this.state.screen as ScreenKey;
+    if (!event?.dayId || event.stage !== 'selling') return null;
+    if (screen === 'bazaar' || CUSTOMER_SCREENS.includes(screen)) return null;
+    const sales = (this.state.sales ?? []) as EventSale[];
+    const seesMoney =
+      this.state.role === 'owner' ||
+      (this.state.cfg as Record<string, unknown> | undefined)?.helperSeesSales === 1;
+    const loaded = (this.state.eventLoaded ?? {}) as Record<string, number>;
+    return {
+      name: event.name ?? 'Bazaar',
+      sales: sales.length,
+      revenueText: seesMoney
+        ? peso(sales.reduce((sum, sale) => sum + pesosToCentavos(Number(sale.total) || 0), 0))
+        : null,
+      sold: sales.reduce(
+        (sum, sale) => sum + Object.values(sale.items).reduce((a, n) => a + (Number(n) || 0), 0),
+        0
+      ),
+      onTable: Object.values(loaded).reduce((a, n) => a + (Number(n) || 0), 0),
+      back: this.resumeBazaarTill
+    };
+  }
+
+  /** The live gate tells the runtime whether the full app is open (`verified`) or only Bazaar Mode is. */
+  setGateAccess(narrow: boolean): void {
+    if (narrow && this.productionRecovery.scope) void this.setProductionIdentity(null);
+    if (this.gateNarrow === narrow) return;
+    this.gateNarrow = narrow;
+    // A form open over the till is the owner's with the whole app open: Bazaar-only mode closes it.
+    if (narrow) {
+      this.bazaarDirectory = false;
+      this.bazaarDays.reset();
+    }
+    if (!this.unmounted) this.forceUpdate();
+  }
+
+  /** HCB-013: the open recipe (and its editor) as the address names it. Only on the Recipes screen, only for a flavour she holds. */
+  private recipeRoute(): RecipeRoute | undefined {
+    if (!isLiveMode() || this.state.role !== 'owner' || this.state.screen !== 'recipes')
+      return undefined;
+    const target = this.state.liveRecipeTarget;
+    if (typeof target === 'string' && this.heldProducts().some((row) => row.id === target))
+      return recipeRouteFor(target, this.state.liveRecipeEdit === target);
+    return this.recipePending
+      ? recipeRouteFor(this.recipePending.id, this.recipePending.edit)
+      : undefined;
+  }
+
+  /** An address names a recipe: it opens once the flavour is in the catalogue she holds, and an unknown one opens nothing. */
+  private restoreRecipeRoute = (route: RecipeRoute | null): RecipeRoute | undefined => {
+    const asked = route ? parseRecipeRoute(route) : null;
+    if (asked) this.recipePending = asked;
+    // The state of an opened recipe lands on the next render; the route it will have is known now.
+    const opened = this.applyRecipeRoute();
+    return opened ? recipeRouteFor(opened.id, opened.edit) : this.recipeRoute();
+  };
+
+  private applyRecipeRoute(): { id: string; edit: boolean } | null {
+    const asked = this.recipePending;
+    if (!asked) return null;
+    if (!isLiveMode() || this.unmounted || this.state.screen !== 'recipes') {
+      this.recipePending = null;
+      return null;
+    }
+    if (this.state.role !== 'owner' || this.catalogueUnread()) return null;
+    this.recipePending = null;
+    if (!this.heldProducts().some((row) => row.id === asked.id)) return null;
+    if (asked.edit) this.recipeRestoreEdit = asked.id;
+    this.setState({
+      liveRecipeTarget: asked.id,
+      liveProductReturnId: null,
+      liveProductEditReturnId: null,
+      ...(asked.edit
+        ? { recipeOpen: asked.id, liveRecipeEdit: asked.id }
+        : { liveRecipeEdit: null })
+    } as never);
+    return asked;
+  }
+
+  /** The recipe book says which flavour's editor it has open (null: none), so the address can name it. */
+  private reportRecipeEditor = (id: string | null): void => {
+    if (this.unmounted) return;
+    // Until an asked-for editor has opened, the book's first report (nothing open yet) must not forget the ask.
+    if (id === null && this.recipeRestoreEdit) return;
+    if (id) this.recipeRestoreEdit = null;
+    if ((this.state.liveRecipeEdit ?? null) !== id) this.setState({ liveRecipeEdit: id } as never);
+  };
+
+  private bazaarRoute(): BazaarRoute {
+    if (this.state.event && !this.bazaarDirectoryShowing()) return 'till';
+    const id = this.bazaarDays.selectedBookingId();
+    return id ? `event:${id}` : 'events';
+  }
+
+  private restoreBazaarRoute = (route: BazaarRoute): BazaarRoute => {
+    if (route === 'till' || !this.canLeaveTill()) {
+      this.bazaarDirectory = false;
+      this.bazaarDays.reset();
+    } else {
+      this.bazaarDirectory = true;
+      const id = bazaarBooking(route);
+      if (!id) this.bazaarDays.reset();
+      else if (this.bazaarDays.selectedBookingId() !== id) this.bazaarDays.open(id);
+    }
+    this.forceUpdate();
+    return this.bazaarRoute();
+  };
+
+  private bazaarDirectoryShowing(): boolean {
+    return (
+      isLiveMode() && this.state.screen === 'bazaar' && this.bazaarDirectory && this.canLeaveTill()
+    );
+  }
+
+  private resumeBazaarTill = (): void => {
+    this.bazaarDirectory = false;
+    this.bazaarDays.reset();
+    this.go('bazaar');
+    this.forceUpdate();
+  };
+
+  /** U2: the owner leaves the till for Home. The day stays open and nothing else moves: not `resetEvent`. */
+  private leaveTill = (): void => {
+    this.go('today');
+  };
+
+  /** U2: the owner, with signal, and with the whole app open. */
+  private canLeaveTill(): boolean {
+    return this.state.role === 'owner' && Boolean(this.state.online) && !this.gateNarrow;
+  }
+
+  /**
+   * U2 (Campus B2): the till's expense "Add" opens the day's fee form, the one list the books read, and never the old
+   * expense sheet. A helper cannot book a fee.
+   */
+  private openTillFees = (): void => {
+    // S3: a helper records a stall expense through the engine's own expense sheet (`add_event_expense`, queued like a sale); fees,
+    // which the books read, stay the owner's.
+    if (this.state.role === 'helper') {
+      this.sheet('evExp');
+      return;
+    }
+    if (this.state.role !== 'owner') {
+      this.toast('The owner adds fees from the event page.', 'warn');
+      return;
+    }
+    if (!this.canLeaveTill()) {
+      this.toast('Adding a fee needs signal. Try again when you are back online.', 'warn');
+      return;
+    }
+    this.bazaarDays.openTillPanel('fees');
+    this.forceUpdate();
+  };
+
+  /** U2: Home's card when no day is selling here (owner only): the event under way or the next, once the bookings are read. */
+  private liveHomeNext(): LiveHomeNext | null {
+    if (this.state.role !== 'owner' || this.state.screen !== 'today' || this.state.event)
+      return null;
+    const next = this.bazaarDays.nextEvent();
+    return next
+      ? {
+          ...next,
+          open: () => {
+            next.open();
+            this.go('bazaar');
+          }
+        }
+      : null;
+  }
+
+  /**
+   * U2: what the live till adds to the ported Bazaar Mode screen, for every role. Tiles that were never on the table (finding
+   * B1) are not drawn. A planned cookie that has all sold stays, dimmed, after the ones still selling (approved 5 November).
+   * `bzSell` has no flavour id, so each row is matched to its flavour by position before anything is dropped.
+   */
+  /**
+   * U4: on a phone the ported toast sits 96 px from the bottom, over the day plan's sticky footer. While that footer is on
+   * screen the toast is lifted above it (spec rule 8). Only the value is changed; the locked frame draws it as before.
+   *
+   * HCB-005: on a phone or tablet the toast never covers what the sale is waiting on. Under the consolidated till it stands
+   * above the sale bar (`--till-sale-bar`, measured by the till; the 76 px fallback keeps the ported 96 px where the bar is
+   * not drawn, as at 1024 px). While the payment sheet is open it moves to the top, clear of the wallet buttons.
+   */
+  private liveToastVals(starved: OpsVals): { toastStyle?: string } {
+    const device = this.state.device;
+    if (
+      !isLiveMode() ||
+      this.state.screen !== 'bazaar' ||
+      (device !== 'mobile' && device !== 'tablet')
+    )
+      return {};
+    const style = String(starved.toastStyle);
+    if ((this.state.sheet as { kind?: string } | null)?.kind === 'pay')
+      return { toastStyle: style.replace(/bottom: \d+px/, 'top: 14px; bottom: auto') };
+    // The consolidated till stands on a sticky sale bar: its toast goes above the bar, for every role (spec rule 8).
+    if (this.consolidatedTillShowing())
+      return {
+        toastStyle: style.replace(
+          /bottom: \d+px/,
+          'bottom: calc(var(--workspace-dock, 0px) + 12px + var(--till-sale-bar, 76px) + 8px)'
+        )
+      };
+    if (device !== 'mobile' || this.state.role !== 'owner' || !this.bazaarDays.hasStickyFooter())
+      return {};
+    return { toastStyle: style.replace(/bottom: \d+px/, 'bottom: 196px') };
+  }
+
+  /** An event is selling on this phone, under the consolidated till (not the classic one, not a review). */
+  private consolidatedTillShowing(): boolean {
+    const event = this.state.event as (LiveEvent & { stage?: unknown }) | null;
+    return (
+      event?.stage === 'selling' &&
+      !this.tillClassic &&
+      !this.bazaarDirectoryShowing() &&
+      !this.bazaarDays.isReviewing()
+    );
+  }
+
+  private liveTillVals(
+    vals: OpsVals
+  ): Pick<OpsVals, 'liveTill'> & Partial<Pick<OpsVals, 'bzSales' | 'bzSell' | 'openEventExpense'>> {
+    const event = this.state.event as LiveEvent | null;
+    const rows = vals.bzSell ?? [];
+    if (!event || rows.length !== PRODUCTS.length) return { liveTill: null };
+    // An event from before bazaar days has no day, so it has no add-cookies or fee form; it still sells on this till.
+    if (!event.dayId && event.stage !== 'selling') return { liveTill: null };
+    const loaded = (this.state.eventLoaded ?? {}) as Record<string, number>;
+    // A cookie never planned for this table is not drawn at all. One planned and all sold stays, marked, after the rest.
+    const planned = rows
+      .map((row, i) => ({ row, product: PRODUCTS[i]! }))
+      .filter(
+        ({ row, product }) =>
+          (loaded[product.id] ?? 0) > 0 || Number(row.left) > 0 || Number(row.inCart) > 0
+      );
+    const isGone = (row: (typeof rows)[number]) =>
+      Boolean(row.soldOut) && !(Number(row.inCart) > 0);
+    const tiles = [
+      ...planned.filter(({ row }) => !isGone(row)),
+      ...planned.filter(({ row }) => isGone(row))
+    ];
+    const soldOutCount = planned.filter(({ row }) => isGone(row)).length;
+    const owner = this.canLeaveTill();
+    const cfg = (this.state.cfg ?? {}) as Record<string, unknown>;
+    const drawer = this.state.drawer as { float?: unknown } | null;
+    const prices = (this.state.eventPrices ?? {}) as Record<string, number>;
+    const priceCents = (pid: string) => pesosToCentavos(Number(prices[pid]) || 0);
+    const ledger = buildTillLedger({
+      sales: (this.state.sales ?? []) as EventSale[],
+      floatPesos: drawer && typeof drawer.float === 'number' ? drawer.float : null,
+      loaded,
+      left: (this.state.eventStock ?? {}) as Record<string, number>,
+      prices,
+      earlierPrices: (this.state.event as LiveEvent | null)?.priceLists ?? [],
+      names: Object.fromEntries(PRODUCTS.map((p) => [p.id, String(p.short ?? p.id)])),
+      // Cine's rule (decision register, 28 September): a helper sees totals only when the owner allows it.
+      seesTotals: this.state.role === 'owner' || cfg.helperSeesSales === 1,
+      problemOf: (sale) => this.saleProblems.get(saleClientId(sale)) ?? null
+    });
+    const liveTill: LiveTillVals = {
+      // The engine's flavour image is already resolved (`flavours.ts`).
+      photos: tiles.map(({ product }) => String(product.img ?? '')),
+      classic: this.tillClassic,
+      setClassic: (on: boolean) => {
+        this.tillClassic = on;
+        rememberClassicTill(on);
+        this.forceUpdate();
+      },
+      soldOutCount,
+      allGone: soldOutCount > 0 && soldOutCount === tiles.length,
+      cartTotalText: peso(
+        planned.reduce(
+          (sum, { row, product }) => sum + priceCents(product.id) * (Number(row.inCart) || 0),
+          0
+        )
+      ),
+      cartLines: Object.fromEntries(
+        planned
+          .filter(({ row }) => Number(row.inCart) > 0)
+          .map(({ row, product }) => [
+            String(row.name),
+            peso(priceCents(product.id) * Number(row.inCart))
+          ])
+      ),
+      ledger,
+      leave: event.dayId ? null : (vals.event?.reset ?? null),
+      home: owner ? this.leaveTill : null,
+      addCookies:
+        owner && event.dayId
+          ? () => {
+              this.bazaarDays.openTillPanel('cookies');
+              this.forceUpdate();
+            }
+          : null,
+      changePrice:
+        owner && event.dayId
+          ? () => {
+              this.bazaarDays.openTillPanel('prices');
+              this.forceUpdate();
+            }
+          : null
+    };
+    // Every peso on the till reads the same way, ₱130.00, as the approved design draws it.
+    const drawn = tiles.map(({ row, product }) => ({
+      ...row,
+      priceText: peso(priceCents(product.id))
+    }));
+    const bzSales = (vals.bzSales ?? []).map((sale, i) => ({
+      ...sale,
+      totalText: ledger.rows[i]?.totalText ?? sale.totalText
+    }));
+    if (!event.dayId) return { bzSales, bzSell: drawn, liveTill };
+    return { bzSales, bzSell: drawn, liveTill, openEventExpense: this.openTillFees };
+  }
+
+  /**
+   * Only the sheet chrome (backdrop, header, close button) is ported; `liveForm` gates the
+   * one new render branch (F3, the project notes).
+   */
+  private liveSheet(sheet: OpsVals['sheet']): OpsVals['sheet'] {
+    if (!sheet) return sheet;
+    const sh = this.state.sheet as FlavourSheetState | null;
+    if (this.state.role === 'owner' && sh?.kind === 'mixDough')
+      return { ...sheet, liveForm: true, title: 'Prepare dough' };
+    const customerKind = this.customerSheetKind();
+    if (customerKind)
+      return {
+        ...sheet,
+        liveForm: true,
+        title: customerKind === 'liveLookup' ? 'Find my order' : 'Join the waiting list'
+      };
+    if (this.state.role === 'owner' && sh?.kind === 'payments') {
+      const method = sh.pid ? this.paymentSync?.rows.find((r) => r.id === sh.pid) : undefined;
+      return {
+        ...sheet,
+        liveForm: true,
+        title: sh.isNew
+          ? 'Add a payment method'
+          : method
+            ? 'Edit ' + method.label
+            : 'Payment methods'
+      };
+    }
+    if (this.state.role === 'owner' && sh?.kind === 'shoptexts')
+      return { ...sheet, liveForm: true, title: 'Shop texts' };
+    if (this.state.role === 'owner' && sh?.kind === 'ordermessages')
+      return { ...sheet, liveForm: true, title: MESSAGE_SHEET.title };
+    if (this.state.role === 'owner' && sh?.kind === 'orderrules')
+      return { ...sheet, liveForm: true, title: 'Order rules' };
+    if (this.state.role === 'owner' && sh?.kind === 'orderextras')
+      return { ...sheet, liveForm: true, title: EXTRAS_COPY.title };
+    if (this.state.role === 'owner' && sh?.kind === 'scheduledevents')
+      return { ...sheet, liveForm: true, title: SCHEDULED_COPY.title };
+    if (this.state.role === 'owner' && sh?.kind === 'books')
+      return { ...sheet, liveForm: true, title: BOOKS_COPY.title };
+    if (this.state.role === 'owner' && sh?.kind === 'stockitems')
+      return { ...sheet, liveForm: true, title: STOCK_COPY.itemsTitle };
+    if (this.state.role === 'owner' && sh?.kind === 'stocksuppliers')
+      return { ...sheet, liveForm: true, title: STOCK_COPY.suppliersTitle };
+    if (this.state.role === 'owner' && sh?.kind === 'recipedrafts')
+      return { ...sheet, liveForm: true, title: 'Recipe drafts' };
+    if (this.state.role !== 'owner' || sh?.kind !== 'flavours')
+      return { ...sheet, liveForm: false };
+    const row = sh.pid ? this.flavourSync?.current().find((r) => r.id === sh.pid) : undefined;
+    return {
+      ...sheet,
+      liveForm: true,
+      title: sh.isNew ? 'Add a flavour' : row ? 'Edit ' + row.name : 'Menu & flavours'
+    };
+  }
+
+  /** The live-only form host's content (MP-09 c1c, F3): list, add or edit one flavour. */
+  private liveFormVals(): OpsVals['liveForm'] {
+    const sh = this.state.sheet as FlavourSheetState | null;
+    if (this.state.role !== 'owner' || sh?.kind !== 'flavours') return null;
+    const allRows = [...(this.flavourSync?.current() ?? [])].sort(
+      (a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id)
+    );
+    const rows = allRows.filter((row) => !row.archived_at);
+    const archivedRows = allRows.filter((row) => !!row.archived_at);
+    const online = this.state.online && (typeof navigator === 'undefined' || navigator.onLine);
+    const target = sh.pid ? allRows.find((r) => r.id === sh.pid) : undefined;
+    // Frozen at open time (openFlavourEditor), not re-read here: see that method's comment.
+    const expectedUpdatedAt = sh.isNew ? null : (sh.updatedAt ?? target?.updated_at ?? null);
+    const editing =
+      sh.isNew || target
+        ? {
+            id: target?.id ?? null,
+            name: target?.name ?? '',
+            shortName: target?.short_name ?? '',
+            description: target?.description ?? '',
+            imagePath: target?.image_path ?? '',
+            allergens: target?.allergens ?? '',
+            badge: target?.tag ?? '',
+            kind: (target?.kind === 'Rotating' ? 'Rotating' : 'Permanent') as
+              'Permanent' | 'Rotating',
+            itemType: (target?.item_type === 'set' || target?.item_type === 'item'
+              ? target.item_type
+              : 'cookie') as 'cookie' | 'set' | 'item',
+            ...this.productTypeChoice(target?.id ?? null, target?.item_type ?? 'cookie'),
+            capacityWeight: target?.capacity_weight ?? 1,
+            sortOrder:
+              target?.sort_order ??
+              (allRows.length ? Math.max(...allRows.map((r) => r.sort_order)) + 1 : 0),
+            price: target ? centavosToPesos(centavosFromDb(target.price_cents)) : 0,
+            active: target?.active ?? true,
+            save: (fields: LiveFlavourFormFields) =>
+              void this.saveFlavourForm(target?.id ?? null, fields, expectedUpdatedAt),
+            cancel: () => this.cancelFlavourEditor(sh),
+            upload: this.uploadImage('flavours'),
+            costItem: target
+              ? (this.recipeBook.vals().items.find((item) => item.id === target.id) ?? null)
+              : null
+          }
+        : null;
+    return {
+      kind: 'flavours',
+      online,
+      rows: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        shortName: r.short_name,
+        priceText: PESO(centavosToPesos(centavosFromDb(r.price_cents))),
+        published: r.published,
+        active: r.active,
+        updatedAt: r.updated_at,
+        edit: () => this.openFlavourEditor(r.id),
+        archive: (updatedAt) => this.setFlavourArchived(r.id, updatedAt, false)
+      })),
+      archivedRows: archivedRows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        updatedAt: r.updated_at,
+        restore: (updatedAt) => this.setFlavourArchived(r.id, updatedAt, true)
+      })),
+      addNew: () => this.openNewFlavour(),
+      publish: () => void this.publishMenu(),
+      close: () => this.closeSheet(),
+      types: this.productTypesView(),
+      editing
+    };
+  }
+
+  /** The owner's payment methods and shop texts (MP-09 c2). Sheet kinds 'payments' and 'shoptexts'. */
+  private openPayments(): void {
+    this.sheet('payments', {});
+    void this.paymentSync?.loadRows();
+  }
+
+  private openPayEditor(id: string): void {
+    const updatedAt = this.paymentSync?.rows.find((r) => r.id === id)?.updated_at ?? null;
+    this.sheet('payments', { pid: id, updatedAt });
+  }
+
+  private openNewPay(): void {
+    this.sheet('payments', { isNew: true });
+  }
+
+  private openShopTexts = async (): Promise<void> => {
+    // Read fresh first, so the stamp the form saves against is the current one.
+    await this.paymentSync?.loadPublic();
+    this.sheet('shoptexts', { updatedAt: this.paymentSync?.info?.textsUpdatedAt ?? null });
+  };
+
+  private async savePayForm(
+    id: string | null,
+    f: LivePayFormFields,
+    expectedUpdatedAt: string | null
+  ): Promise<void> {
+    if (!this.paymentSync) {
+      this.toast('Payment methods cannot be saved here: no connection to the database.', 'warn');
+      return;
+    }
+    const fields = {
+      label: f.label.trim(),
+      account_number: f.accountNumber.trim(),
+      account_name: f.accountName.trim(),
+      qr_path: f.qrPath.trim(),
+      active: f.active,
+      sort_order: f.sortOrder
+    };
+    const existing = new Set(this.paymentSync.rows.map((r) => r.id));
+    const methodId = id ?? slugifyFlavourId(fields.label, existing);
+    if ((await this.paymentSync.saveMethod(methodId, fields, expectedUpdatedAt)) === 'saved') {
+      this.toast('Payment method saved.');
+      this.openPayments();
+    }
+  }
+
+  private async saveTextsForm(t: LiveShopTexts, expectedUpdatedAt: string | null): Promise<void> {
+    if (!this.paymentSync) {
+      this.toast('Shop texts cannot be saved here: no connection to the database.', 'warn');
+      return;
+    }
+    const outcome = await this.paymentSync.saveTexts(
+      {
+        registration_badge: t.registrationBadge.trim(),
+        tin_line: t.tinLine.trim(),
+        invoice_note: t.invoiceNote.trim(),
+        allergen_note: t.allergenNote.trim()
+      },
+      expectedUpdatedAt
+    );
+    if (outcome === 'saved') {
+      this.toast('Shop texts saved.');
+      this.closeSheet();
+    }
+  }
+
+  private uploadImage = (folder: 'qr' | 'flavours') => (file: File) =>
+    this.paymentSync ? this.paymentSync.upload(folder, file) : Promise.resolve(null);
+
+  private customerActionScope(): () => boolean {
+    const source = this.customerOrders.scope(),
+      flow = this.orderFlow,
+      screen = this.state.screen,
+      sheet = this.state.sheet,
+      view = this.customerViewEpoch;
+    return () =>
+      !this.unmounted &&
+      view === this.customerViewEpoch &&
+      source() &&
+      this.orderFlow === flow &&
+      this.onCustomerScreen() &&
+      this.state.screen === screen &&
+      this.state.sheet === sheet;
+  }
+
+  /** The checkout's methods and QR in live mode: only what the read returned, never the ported accounts. */
+  private livePayCust(cust: OpsVals['cust']): OpsVals['cust'] {
+    const current = this.customerActionScope();
+    cust = {
+      ...cust,
+      submit: () => {
+        if (current()) this.custSubmit();
+      },
+      methods: (cust.methods ?? []).map((method) => ({
+        ...method,
+        pick: () => {
+          if (current()) method.pick();
+        }
+      }))
+    };
+
+    const sync = this.paymentSync;
+    const info = sync?.publicState === 'ready' ? sync.info : null;
+    // `noQr` is the ported 'Pick a payment method…' note, which also names a bank number and cash on
+    // pickup: a customer must never be told to pay a number the owner did not enter (finding 16).
+    if (!info)
+      return { ...cust, methods: [], qr: '', noQr: false, priceNote: ORDER_COPY.extras.priceNote };
+    const picked = info.methods.find(
+      (m) => m.label === (this.state.cust as { pay?: string } | undefined)?.pay
+    );
+    const url = picked ? resolveImagePath(picked.qr) : '';
+    // The engine builds the style with `url(RES(qr))`, which turns an absolute URL into a
+    // relative one, so the image URL is swapped for the resolved one; a method with no QR shows none.
+    const style = typeof cust.qr === 'string' ? cust.qr : '';
+    return {
+      ...cust,
+      // The ported note says there is no extra charge; boxes, add-ons and same-day can add to the total (B4b).
+      priceNote: ORDER_COPY.extras.priceNote,
+      noQr: false,
+      qr: url && style ? style.replace(/url\([^)]*\)/, 'url(' + url + ')') : ''
+    };
+  }
+
+  /**
+   * B2: the customer's checkout, lookup and waiting list talk to the database through one
+   * `OrderFlow`. With no client (a live build with no Supabase) there is none, and the pages say
+   * ordering is unavailable rather than pretending.
+   */
+  async loadShopOrders(
+    client: OrderClient | null,
+    backend: string | null = null
+  ): Promise<boolean> {
+    if (!isLiveMode()) return false;
+    const previous = this.orderFlow;
+    const { flow } = this.customerOrders.bind(client, backend);
+    this.orderFlow = flow;
+    if (previous !== flow) previous?.clearLookup();
+    if (previous !== flow && this.customerSheetKind()) this.closeSheet();
+    if (!flow) {
+      this.forceUpdate();
+      return false;
+    }
+    if (previous !== flow) this.restoreCustomerCheckout(flow, flow.restoreRecovery());
+    this.syncStatusRoute();
+    void flow.loadExtras();
+    return flow.loadRules();
+  }
+
+  private restoreCustomerCheckout(
+    flow: OrderFlow,
+    body: import('@/lib/data/orders').OrderBody | null
+  ): void {
+    if (!body || this.orderFlow !== flow) return;
+    const current = this.customerOrders.scope();
+    this.setState(() =>
+      !this.unmounted && current() && this.orderFlow === flow
+        ? {
+            cust: {
+              ...BLANK_CUST,
+              name: body.name,
+              ig: body.ig,
+              mobile: body.mobile,
+              pay: body.pay_method,
+              ref: body.pay_ref ?? '',
+              pickupDate: body.pickup_date,
+              pickupTime: body.pickup_window,
+              box: Object.fromEntries(body.items.map((row) => [row.product_id, row.qty]))
+            }
+          }
+        : null
+    );
+  }
+
+  private async liveSubmit(): Promise<void> {
+    if (!this.orderFlow) {
+      this.toast(ORDER_COPY.unavailable, 'warn');
+      return;
+    }
+    const c = (this.state.cust ?? {}) as CustFields;
+    const flow = this.orderFlow;
+    const sameDay = flow.extras?.sameDay;
+    // A date picked as tomorrow that is today by the time it is sent (midnight passed) would be charged the same-day
+    // extra without ever showing it. A retry of an unsettled attempt sends its frozen body and is left alone.
+    if (
+      sameDay?.enabled &&
+      !flow.unresolved &&
+      c.pickupDate === manilaToday() &&
+      flow.renderedSameDay !== c.pickupDate
+    ) {
+      flow.holdSameDay(ORDER_COPY.extras.sameDayNow(sameDay.percent));
+      return;
+    }
+    await this.orderFlow.submit({
+      name: c.name ?? '',
+      ig: c.ig ?? '',
+      mobile: c.mobile ?? '',
+      method: c.pay ?? '',
+      pickupDate: c.pickupDate ?? '',
+      pickupWindow: c.pickupTime ?? '',
+      ref: c.ref ?? '',
+      items: c.box ?? {}
+    });
+  }
+
+  /** "Order this cookie again": the cookies of the order on screen that are still on the menu. */
+  private liveReorder(): void {
+    const items = this.orderFlow?.status?.items;
+    if (!items) {
+      this.toast(ORDER_COPY.noOrderToRepeat, 'warn');
+      return;
+    }
+    const box: Record<string, number> = {};
+    for (const item of items) {
+      if (PRODUCTS.some((p) => p.id === item.productId)) box[item.productId] = item.qty;
+    }
+    if (this.orderFlow?.resetCheckout() === false) return;
+    this.setState({ cust: { ...BLANK_CUST, box } });
+    this.go('shop');
+    const any = Object.keys(box).length > 0;
+    this.toast(
+      any ? 'Same box loaded. Change anything before you check out.' : ORDER_COPY.noMenu,
+      any ? 'ok' : 'warn'
+    );
+  }
+
+  /**
+   * Keeps the status link (`#t=` in the fragment, never the query string) in the address bar and
+   * adopts it on a direct load. Called after every render by `LiveOrderRoute`, which runs after
+   * `RouteSync`, so the route's own `pushState` (which drops a fragment) has already happened.
+   */
+  syncStatusRoute(): void {
+    if (!isLiveMode() || typeof window === 'undefined' || !this.orderFlow) return;
+    if (this.state.screen !== 'status') return;
+    const flow = this.orderFlow;
+    const hash = window.location.hash;
+    const fromUrl = tokenFromHash(hash);
+    // A link the customer opened or pasted into this tab: the fragment changed and nothing here wrote it.
+    if (fromUrl && fromUrl !== flow.statusToken && hash !== this.lastHash) {
+      this.lastHash = hash;
+      void flow.loadStatus(fromUrl);
+      return;
+    }
+    if (!flow.statusToken) return;
+    const wanted = '#t=' + flow.statusToken;
+    if (hash !== wanted) {
+      this.lastHash = wanted;
+      window.history.replaceState(window.history.state, '', window.location.pathname + wanted);
+    }
+  }
+
+  private onCustomerScreen(): boolean {
+    return CUSTOMER_SCREENS.includes(this.state.screen as ScreenKey);
+  }
+
+  /**
+   * The customer sheets are gated on the CURRENT SCREEN being a customer screen, never on the role:
+   * an anonymous visitor's engine role defaults to 'owner'.
+   */
+  private customerSheetKind(): 'liveLookup' | 'liveWaitlist' | null {
+    const kind = (this.state.sheet as FlavourSheetState | null)?.kind;
+    return this.onCustomerScreen() && (kind === 'liveLookup' || kind === 'liveWaitlist')
+      ? kind
+      : null;
+  }
+
+  private openLookupSheet(): void {
+    this.orderFlow?.clearLookup();
+    this.sheet('liveLookup', {});
+  }
+
+  private openWaitlist(): void {
+    if (this.orderFlow && this.orderFlow.waitlistState !== 'unknown')
+      this.orderFlow.resetWaitlist();
+    this.sheet('liveWaitlist', {});
+  }
+
+  /** Not `runLookup`: that is the engine's own instance field, which would replace this method. */
+  private async runLiveLookup(orderNo: string, mobile: string): Promise<void> {
+    const flow = this.orderFlow,
+      current = this.customerActionScope();
+    if (!flow) {
+      this.toast(ORDER_COPY.lookupError, 'warn');
+      return;
+    }
+    if ((await flow.lookup(orderNo, mobile, current)) === 'found' && current()) {
+      this.closeSheet();
+      this.go('status');
+    }
+  }
+
+  /** The checkout's live slot (B2): fields, pickup choices, refusals and the placed order. */
+  private liveCheckoutVals(): OpsVals['liveCheckout'] {
+    if (this.state.screen !== 'checkout') return null;
+    const current = this.customerActionScope();
+    const flow = this.orderFlow;
+    const c = (this.state.cust ?? {}) as CustFields;
+    const online = () =>
+      Boolean(this.state.online) && (typeof navigator === 'undefined' || navigator.onLine);
+    const rules = flow?.rules ?? null;
+    const placed = flow?.placed ?? null;
+    const statusUrl = (token: string) => window.location.origin + '/status#t=' + token;
+    const x = flow?.extras ?? null;
+    const dates = rules
+      ? pickupDates(rules, Date.now(), x?.sameDay.enabled ? x.sameDay.percent : null)
+      : [];
+    const sameDayPicked = dates.some((d) => d.sameDay && d.value === c.pickupDate);
+    // What the customer can see right now, kept for `liveSubmit`: a same-day date shown as same-day was agreed to.
+    if (flow) flow.renderedSameDay = sameDayPicked ? (c.pickupDate ?? null) : null;
+    const times = rules ? pickupTimes(rules, sameDayPicked ? manilaMinutes() : null) : [];
+    const samplerId = x?.sampler.productId ?? null;
+    const cookieQty = Object.entries(c.box ?? {})
+      .filter(([id]) => id !== samplerId)
+      .reduce((n, [, qty]) => n + Math.max(0, qty), 0);
+    const boxed = Object.entries(flow?.boxQty ?? {}).reduce(
+      (n, [size, qty]) => n + Number(size) * qty,
+      0
+    );
+    const money = (cents: number) => PESO(centavosToPesos(centavosFromDb(cents)));
+    const extras: NonNullable<OpsVals['liveCheckout']>['extras'] = x
+      ? {
+          sameDayNotice: !sameDayPicked
+            ? ''
+            : times.length === 0
+              ? ORDER_COPY.extras.noSlotsToday
+              : ORDER_COPY.extras.sameDayNotice(x.sameDay.percent),
+          boxes:
+            x.boxes.length &&
+            (cookieQty >= x.boxes[0]!.size || Object.keys(flow?.boxQty ?? {}).length > 0)
+              ? x.boxes.map((b) => {
+                  const qty = flow?.boxQty[b.size] ?? 0;
+                  return {
+                    size: b.size,
+                    label: ORDER_COPY.extras.boxLabel(
+                      b.size,
+                      b.chargeCents > 0 ? money(b.chargeCents) : ''
+                    ),
+                    qty,
+                    max: qty + Math.max(0, Math.floor((cookieQty - boxed) / b.size)),
+                    setQty: (n: number) => {
+                      if (current()) flow?.setBox(b.size, n);
+                    }
+                  };
+                })
+              : [],
+          addOns: x.addOns.map((a) => {
+            const keys = (a.variants.length ? a.variants : ['']).map((v) => a.id + LINE_SEP + v);
+            const used = keys.reduce((n, k) => n + (flow?.lines[k]?.qty ?? 0), 0);
+            return {
+              id: a.id,
+              name: a.name,
+              priceText: money(a.priceCents),
+              textLabel: a.textLabel,
+              textMax: a.textMax,
+              rows: keys.map((key) => {
+                const v = key.slice(a.id.length + 1);
+                const line = flow?.lines[key];
+                const qty = line?.qty ?? 0;
+                return {
+                  key,
+                  label: v ? a.name + ' ' + v : a.name,
+                  photo: v ? resolveImagePath(a.choiceImages[v] ?? '') : '',
+                  qty,
+                  max: a.textLabel !== null ? 1 : qty + Math.max(0, a.maxQty - used),
+                  text: line?.text ?? '',
+                  setQty: (n: number) => {
+                    if (current()) flow?.setLine(key, { qty: n });
+                  },
+                  setText: (t: string) => {
+                    if (current()) flow?.setLine(key, { text: t.slice(0, a.textMax) });
+                  }
+                };
+              })
+            };
+          })
+        }
+      : null;
+    const anyExtras =
+      Object.keys(flow?.boxQty ?? {}).length > 0 ||
+      Object.values(flow?.lines ?? {}).some((l) => l.qty > 0);
+    return {
+      fields: {
+        name: c.name ?? '',
+        ig: c.ig ?? '',
+        mobile: c.mobile ?? '',
+        ref: c.ref ?? '',
+        pickupDate: c.pickupDate ?? '',
+        pickupTime: c.pickupTime ?? '',
+        pay: c.pay ?? ''
+      },
+      set: (key, value) => {
+        if (current()) this.custSet(key, value);
+      },
+      errors: flow?.errors ?? {},
+      dates,
+      times,
+      extras,
+      totalNote: anyExtras || sameDayPicked ? ORDER_COPY.extras.totalNote : '',
+      rulesState: flow ? flow.rulesState : 'failed',
+      extrasState: flow?.extrasState ?? 'failed',
+      extrasUnchecked:
+        (anyExtras ||
+          c.pickupDate === manilaToday() ||
+          !!(samplerId && (c.box?.[samplerId] ?? 0) > 0)) &&
+        flow?.extrasState !== 'ready',
+      canRetryRules: !!flow && online() && flow.rulesState !== 'loading',
+      canRetryExtras: !!flow && online() && flow.extrasState !== 'loading',
+      retryRules: () => {
+        if (flow && current() && online() && flow.rulesState !== 'loading') void flow.loadRules();
+      },
+      retryExtras: () => {
+        if (flow && current() && online() && flow.extrasState !== 'loading') void flow.loadExtras();
+      },
+      recovery: flow?.hasRecovery
+        ? {
+            ready: flow.recoveryReady,
+            notice:
+              flow.recoveryState === 'empty'
+                ? ''
+                : flow.recoveryState === 'ready'
+                  ? placed
+                    ? 'Your order confirmation is kept in this tab. Closing the tab can remove it.'
+                    : 'Your earlier request is kept in this tab. Try again sends the same request.'
+                  : placed
+                    ? 'Your order was received, but this tab could not save its confirmation. Keep this page open and retry saving it.'
+                    : 'This tab could not safely read or keep its saved order. The saved copy has not been replaced. Keep this page open and retry checkout recovery before sending.',
+            canRetry: !flow.sending && !flow.recoveryReady,
+            retry: () => {
+              if (current() && !flow.sending)
+                this.restoreCustomerCheckout(flow, flow.retryRecovery());
+            }
+          }
+        : null,
+      readOnly:
+        (flow?.unresolved ?? false) ||
+        (flow?.sending ?? false) ||
+        (flow?.hasRecovery === true && !flow.recoveryReady),
+      frozen: flow?.unresolved ?? false,
+      sending: flow?.sending ?? false,
+      banner: flow?.banner ?? null,
+      submit: () => {
+        if (current()) this.custSubmit();
+      },
+      changeOrder: () => {
+        if (current()) flow?.changeOrder();
+      },
+      openWaitlist: () => {
+        if (current()) this.openWaitlist();
+      },
+      holdNote: rules ? ORDER_COPY.payLater(rules.unpaidHoldHours) : '',
+      placed: placed
+        ? {
+            orderNo: placed.orderNo,
+            statusUrl: statusUrl(placed.token),
+            totalText: PESO(centavosToPesos(centavosFromDb(placed.totalCents))),
+            pickupText: pickupLabel(placed.pickupDate, placed.pickupWindow),
+            extraLines: flow?.placedLines ?? [],
+            copyLink: () => {
+              if (!current()) return;
+              const write = navigator.clipboard?.writeText(statusUrl(placed.token));
+              if (!write) {
+                this.toast(ORDER_COPY.linkCopyFailed, 'warn');
+                return;
+              }
+              void write.then(
+                () => {
+                  if (current()) this.toast(ORDER_COPY.linkCopied);
+                },
+                () => {
+                  if (current()) this.toast(ORDER_COPY.linkCopyFailed, 'warn');
+                }
+              );
+            },
+            seeOrder: () => {
+              if (!current()) return;
+              if (!flow?.hasRecovery) {
+                if (flow?.resetCheckout() === false) return;
+                this.setState({ cust: { ...BLANK_CUST, box: {} } });
+              }
+              void flow?.loadStatus(placed.token);
+              this.go('status');
+            },
+            orderAgain: () => {
+              if (current()) this.custRestart();
+            }
+          }
+        : null
+    };
+  }
+
+  private liveLookupVals(): OpsVals['liveLookup'] {
+    // The /lookup screen carries the form itself (the guarded slot in find-my-order.tsx, B3); on any
+    // other customer screen it is the sheet the shop footer opens.
+    const onLookupScreen = this.state.screen === 'lookup';
+    if (!onLookupScreen && this.customerSheetKind() !== 'liveLookup') return null;
+    const current = this.customerActionScope();
+    return {
+      state: this.orderFlow?.lookupState ?? 'idle',
+      run: (orderNo, mobile) => {
+        if (current()) void this.runLiveLookup(orderNo, mobile);
+      },
+      close: () => {
+        if (current()) {
+          this.orderFlow?.clearLookup();
+          this.closeSheet();
+        }
+      }
+    };
+  }
+
+  private liveWaitlistVals(): OpsVals['liveWaitlist'] {
+    if (this.customerSheetKind() !== 'liveWaitlist') return null;
+    const flow = this.orderFlow,
+      current = this.customerActionScope();
+    return {
+      state: flow?.waitlistState ?? 'idle',
+      message: flow?.waitlistMessage ?? '',
+      errors: flow?.waitlistErrors ?? {},
+      ...waitlistRange(),
+      join: (fields) => {
+        if (!current()) return;
+        if (!flow) {
+          this.toast(ORDER_COPY.unavailable, 'warn');
+          return;
+        }
+        void flow.joinWaitlist(fields);
+      },
+      close: () => {
+        if (!current()) return;
+        // An unsettled entry stays frozen, so opening the form again resends it under the same id.
+        if (flow && flow.waitlistState !== 'unknown') flow.resetWaitlist();
+        this.closeSheet();
+      }
+    };
+  }
+
+  private liveCustomerPaymentVals(): OpsVals['liveCustomerPayment'] {
+    const flow = this.orderFlow,
+      sync = this.paymentSync;
+    if (this.state.screen !== 'status' || !flow?.status) return null;
+    const token = flow.statusToken,
+      current = this.customerActionScope();
+    const matching = !!sync && flow.usesClient(sync.sourceClient);
+    const online = () =>
+      Boolean(this.state.online) && (typeof navigator === 'undefined' || navigator.onLine);
+    return {
+      order: flow.status,
+      fresh: flow.statusState === 'loaded',
+      methods: matching && sync.publicState === 'ready' ? (sync.info?.methods ?? []) : null,
+      paymentState: matching ? sync.publicState : 'failed',
+      canRetry: matching && online() && sync.publicState !== 'loading',
+      retry: () => {
+        if (
+          !current() ||
+          !matching ||
+          this.paymentSync !== sync ||
+          flow.statusToken !== token ||
+          typeof window === 'undefined' ||
+          tokenFromHash(window.location.hash) !== token ||
+          !online() ||
+          sync.publicState === 'loading'
+        )
+          return;
+        void sync.loadPublic();
+      }
+    };
+  }
+
+  private liveStatusReadVals(): OpsVals['liveStatusRead'] {
+    if (this.state.screen !== 'status' || !this.orderFlow) return null;
+    const flow = this.orderFlow,
+      token = flow.statusToken,
+      current = this.customerActionScope();
+    const online = () =>
+      this.state.online && (typeof navigator === 'undefined' || navigator.onLine);
+    return {
+      state: flow.statusState,
+      stale: !!flow.status && flow.statusState !== 'loaded',
+      online: online(),
+      retry: () => {
+        if (
+          !current() ||
+          !token ||
+          flow.statusToken !== token ||
+          !online() ||
+          flow.statusState === 'loading'
+        )
+          return;
+        const hash = typeof window === 'undefined' ? '' : window.location.hash;
+        if (tokenFromHash(hash) !== token) return;
+        void flow.loadStatus(token);
+      }
+    };
+  }
+
+  /** The status page's values from `order_status`, never from the engine's local orders. */
+  private liveStatusCust(cust: OpsVals['cust']): OpsVals['cust'] {
+    if (this.state.screen !== 'status') return cust;
+    const flow = this.orderFlow,
+      current = this.customerActionScope();
+    const allergenNote = this.paymentSync?.info?.texts.allergen_note ?? '';
+    if (flow?.status && flow.statusState !== 'missing')
+      return {
+        ...cust,
+        ...statusCust(flow.status, { allergenNote }),
+        reorder: () => {
+          if (current()) this.liveReorder();
+        }
+      };
+    const shell = {
+      ...cust,
+      orderNo: '—',
+      invoiceLine: '',
+      showRetry: false,
+      showCode: false,
+      pickupCode: '',
+      windowText: '',
+      allergenNote,
+      timeline: [] as OpsVals['cust']['timeline']
+    };
+    const state = flow?.statusState ?? 'idle';
+    if (state === 'loading') return { ...shell, heroTitle: ORDER_COPY.loadingOrder, heroBody: '' };
+    if (state === 'error')
+      return { ...shell, heroTitle: ORDER_COPY.statusErrorTitle, heroBody: ORDER_COPY.statusError };
+    return {
+      ...shell,
+      heroTitle: ORDER_COPY.statusMissingTitle,
+      heroBody: ORDER_COPY.statusMissing
+    };
+  }
+
+  /** The shop footer's lines: the owner's own text, or nothing (finding 16). */
+  private shopFooterVals(): NonNullable<OpsVals['shopFooter']> {
+    const texts = this.paymentSync?.info?.texts ?? EMPTY_TEXTS;
+    return {
+      badge: texts.registration_badge,
+      tin: texts.tin_line,
+      invoice: texts.invoice_note,
+      allergens: texts.allergen_note
+    };
+  }
+
+  private livePayVals(): OpsVals['livePay'] {
+    const sh = this.state.sheet as FlavourSheetState | null;
+    if (this.state.role !== 'owner' || sh?.kind !== 'payments') return null;
+    const rows = this.paymentSync?.rows ?? [];
+    const target = sh.pid ? rows.find((r) => r.id === sh.pid) : undefined;
+    const expectedUpdatedAt = sh.isNew ? null : (sh.updatedAt ?? target?.updated_at ?? null);
+    const online = this.state.online && (typeof navigator === 'undefined' || navigator.onLine);
+    return {
+      online,
+      rows: rows.map((r) => ({
+        id: r.id,
+        label: r.label,
+        detail: [r.account_number, r.account_name].filter(Boolean).join(' · '),
+        active: r.active,
+        hasQr: r.qr_path !== '',
+        edit: () => this.openPayEditor(r.id)
+      })),
+      addNew: () => this.openNewPay(),
+      close: () => this.closeSheet(),
+      editing:
+        sh.isNew || target
+          ? {
+              id: target?.id ?? null,
+              label: target?.label ?? '',
+              accountNumber: target?.account_number ?? '',
+              accountName: target?.account_name ?? '',
+              qrPath: target?.qr_path ?? '',
+              active: target?.active ?? true,
+              sortOrder:
+                target?.sort_order ??
+                (rows.length ? Math.max(...rows.map((r) => r.sort_order)) + 1 : 0),
+              save: (fields: LivePayFormFields) =>
+                void this.savePayForm(target?.id ?? null, fields, expectedUpdatedAt),
+              cancel: () => this.openPayments(),
+              upload: this.uploadImage('qr')
+            }
+          : null
+    };
+  }
+
+  private liveTextsVals(): OpsVals['liveTexts'] {
+    const sh = this.state.sheet as FlavourSheetState | null;
+    if (this.state.role !== 'owner' || sh?.kind !== 'shoptexts') return null;
+    const texts = this.paymentSync?.info?.texts ?? EMPTY_TEXTS;
+    const online = this.state.online && (typeof navigator === 'undefined' || navigator.onLine);
+    const source = this.identitySourceGeneration,
+      seq = this.identityReadSeq,
+      actor = this.productionActorEpoch;
+    const currentIdentity = () =>
+      !this.unmounted &&
+      source === this.identitySourceGeneration &&
+      actor === this.productionActorEpoch &&
+      this.state.role === 'owner' &&
+      this.state.sheet === sh;
+    return {
+      online,
+      texts: {
+        registrationBadge: texts.registration_badge,
+        tinLine: texts.tin_line,
+        invoiceNote: texts.invoice_note,
+        allergenNote: texts.allergen_note
+      },
+      save: (t: LiveShopTexts) => void this.saveTextsForm(t, sh.updatedAt ?? null),
+      identity: {
+        shopName: this.identity.shopName,
+        ownerName: this.identity.ownerName,
+        contactLine: this.identity.contactLine,
+        tagline: this.identity.tagline
+      },
+      identityReady: this.identityReady,
+      saveIdentity: (fields: IdentityFields) => {
+        if (seq === this.identityReadSeq) void this.saveIdentityForm(fields, currentIdentity);
+      },
+      close: () => this.closeSheet()
+    };
+  }
+
+  /**
+   * The notifications screen's alert switches call `this.toggleChannel(k)`, which the
+   * protected engine (and the prototype it was ported from) never defines, so every tap
+   * threw. Flips that one channel; the switch's On/Off text is the feedback, as in the
+   * prototype. In live mode the owner's change saves through `save_setting` (MP-09 b3).
+   */
+  toggleChannel = (key: string): void => {
+    this.setState((s) => {
+      const channels = s.channels as Record<string, boolean>;
+      return { channels: { ...channels, [key]: !channels[key] } };
+    });
+    this.settingsSync?.queue('channels');
+  };
+
+  syncNow = (): void => {
+    void this.runSync();
+  };
+
+  /**
+   * Sends the queue, then makes the sale rows on screen say what the queue says. Live only:
+   * the prototype's optimistic flags stay as they were in demo mode.
+   */
+  flushSales = async (options?: FlushOptions): Promise<FlushResult> => {
+    const result = await flushQueue(this.saleClient, options);
+    const refusedVoid = result.failed.some(
+      ({ clientId, permanent }) => permanent && clientId.startsWith(voidKey(''))
+    );
+    if (refusedVoid) this.tillEdits += 1;
+    await this.reflectQueue();
+    // S2: after a send, or the phone coming back, the day is read again: sales from her other devices arrive here.
+    if (!this.unmounted) {
+      if (refusedVoid && this.state.screen === 'bazaar')
+        this.toast('The server declined a void. Check the sale before trying again.', 'warn');
+      void this.refreshHeldDay({ force: refusedVoid });
+    }
+    // A sale that reached the server used its pouches and bag there (stock only: no batch or dough changed): show what stock the database holds.
+    if (result.sent.length > 0 && this.state.role === 'owner' && !this.unmounted) {
+      void this.loadStockCatalogue(null);
+      void this.loadBooks(null);
+      // D3: after a sync, a price changed on another of her devices reaches this till.
+      void this.refreshHeldPrices();
+    }
+    return result;
+  };
+
+  private async reflectQueue(): Promise<void> {
+    if (!isLiveMode()) return;
+    let queue: Awaited<ReturnType<typeof allSales>>;
+    try {
+      queue = await allSales();
+    } catch {
+      if (this.unmounted) return;
+      this.operationsQueue = -1;
+      this.dayQueue = null;
+      this.setState({});
+      return;
+    }
+    if (this.unmounted) return;
+    this.operationsQueue = queue.filter((row) => row.state !== 'sent').length;
+    const heldId = (this.state.event as LiveEvent | null)?.id;
+    const split = heldId ? splitForEvent(queue, heldId) : null;
+    this.dayQueue = split
+      ? {
+          blocking: split.blocking.length,
+          refused: new Set(split.refused.map((row) => row.clientId))
+        }
+      : null;
+    const states = new Map(queue.map((row) => [row.clientId, row.state]));
+    this.saleProblems = new Map(
+      queue.flatMap((row) => {
+        const words = row.state === 'sent' ? null : saleProblemWords(row);
+        return words ? [[row.clientId, words] as const] : [];
+      })
+    );
+    this.setState((s) => {
+      const sales = (s.sales as EventSale[]).map((sale) => {
+        const state = states.get(saleClientId(sale));
+        if (!state) return sale;
+        const synced = state === 'sent';
+        const failed = state === 'failed';
+        return sale.synced === synced && sale.failed === failed
+          ? sale
+          : { ...sale, synced, failed };
+      });
+      const unsynced = sales.filter((sale) => !sale.synced).length;
+      // An automatic send can finish what a failed Sync now could not: the "could not be sent" line must not stay behind.
+      // The whole queue decides, because a void, an expense or a close can be what is stuck.
+      return s.syncState === 'partial' && unsynced === 0 && this.operationsQueue === 0
+        ? ({ sales, unsynced, syncState: 'idle' } as never)
+        : { sales, unsynced };
+    });
+  }
+
+  private async runSync(): Promise<void> {
+    if (!this.state.online) {
+      this.toast('Still offline. Sales are safe on this phone.', 'warn');
+      return;
+    }
+    const queued = await pendingSales();
+    const pending = queued.length || this.state.sales.filter((sale) => !sale.synced).length;
+    if (!pending) {
+      this.toast('Nothing waiting to sync.');
+      return;
+    }
+
+    this.setState({ syncState: 'syncing' });
+    // After a real unmount setState is a no-op; after a StrictMode remount the result must land.
+    const result = await this.flushSales();
+    if (result.skipped) {
+      this.setState({ syncState: 'partial', syncTried: true });
+      this.toast(
+        'Sales are safe on this phone. They will send once it can reach the server.',
+        'warn'
+      );
+      return;
+    }
+    const sentIds = new Set(result.sent);
+    const sentSales = result.sent.filter(isSaleKey).length;
+    const failed = result.failed.length;
+
+    if (failed) {
+      await requestBackgroundSync();
+      this.setState((s) => ({
+        syncState: 'partial',
+        syncTried: true,
+        unsynced: isLiveMode() ? s.unsynced : failed,
+        sales: isLiveMode()
+          ? s.sales
+          : s.sales.map((sale: EventSale) =>
+              sentIds.has(saleClientId(sale))
+                ? { ...sale, synced: true, failed: false }
+                : { ...sale, failed: !sale.synced }
+            )
+      }));
+      if (result.failed.some((f) => f.permanent)) {
+        this.toast(
+          'The server refused something it was sent. It is still saved on this phone. Ask Alex to look at it.',
+          'warn'
+        );
+        return;
+      }
+      this.toast(
+        sentSales +
+          ' of ' +
+          (sentSales + failed) +
+          ' sales synced. One could not be sent — nothing was lost. Tap Sync now again to finish.',
+        'warn'
+      );
+      return;
+    }
+
+    // Live: flushSales already reflected the queue, so a sale recorded during the flush stays unsynced.
+    this.setState((s) => ({
+      syncState: 'synced',
+      syncTried: true,
+      unsynced: isLiveMode() ? s.unsynced : 0,
+      sales: isLiveMode()
+        ? s.sales
+        : s.sales.map((sale: EventSale) => ({ ...sale, synced: true, failed: false }))
+    }));
+    this.toast(plural(sentSales || pending, 'sale', 'sales') + ' synced.');
+  }
+}
+
+export type OpsRuntimeProps = OpsEngineProps;

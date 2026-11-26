@@ -1,0 +1,234 @@
+/* Home layout on the shared glass recipe (`@/components/ui/glass.module.css`). */
+
+.glassMore {
+  min-height: 44px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-owner-ink) 6%, transparent);
+}
+
+/* ---- Home layout: 12 columns, gap 24; one column and gap 12 on a phone ---------------------------------- */
+.home {
+  display: grid;
+  width: 100%;
+  max-width: 1600px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.span12,
+.spanHero,
+.spanSide,
+.spanHalf,
+.spanThird,
+.spanTwoThirds {
+  grid-column: 1 / -1;
+}
+@media (min-width: 651px) {
+  .home {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 24px;
+  }
+  .spanHalf {
+    grid-column: span 6;
+  }
+}
+/* From 1000 px, "Needs you" runs down the right beside the month and the orders and stock cards under it, so a long
+   list fills its column instead of stretching the month card around empty space. A short list keeps its own height. */
+@media (min-width: 1000px) {
+  .spanHero {
+    grid-column: span 8;
+  }
+  .spanSide {
+    grid-column: span 4;
+    grid-row: span 3;
+    align-self: start;
+  }
+  .spanHalf {
+    grid-column: span 4;
+  }
+  .spanTwoThirds {
+    grid-column: span 8;
+  }
+  .spanThird {
+    grid-column: span 4;
+  }
+}
+
+.tile:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* ---- Quick action tiles -------------------------------------------------------------------------------------- */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+.tile {
+  display: flex;
+  min-height: 72px;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 12px 12px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--color-owner-raise);
+  box-shadow: inset 0 0 0 1px var(--color-owner-line);
+  color: var(--color-ink);
+  text-align: left;
+}
+.tile:hover {
+  background: var(--color-owner-soft);
+}
+.tileIcon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 12px;
+  background: rgb(231 95 35 / 0.12);
+  color: var(--color-brand-deep);
+}
+.tileIcon svg,
+.chipIcon {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.chipIcon {
+  width: 14px;
+  height: 14px;
+}
+
+/* The stock counts: two by two, all four in a row once the card has room for them. */
+@container (min-width: 520px) {
+  .legend {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+/* The three order counts: side by side when the card has room, one row each in a narrow card. */
+.orderTiles {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.orderTiles > button {
+  min-height: 56px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+}
+@container (min-width: 300px) {
+  .orderTiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .orderTiles > button {
+    min-height: 72px;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: 4px;
+  }
+}
+@container (min-width: 380px) {
+  .orderTiles {
+    gap: 12px;
+  }
+}
+
+/* Sales this week: seven bars on one baseline; bars grow from it (500 ms, 40 ms apart), never under reduced motion. */
+.weekChart {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 24px;
+}
+.weekCol {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.weekPlot {
+  position: relative;
+  display: flex;
+  height: 120px;
+  align-items: flex-end;
+  justify-content: center;
+  border-bottom: 1px solid var(--color-owner-line);
+}
+.weekBar {
+  display: block;
+  width: min(100%, 36px);
+  min-height: 2px;
+  border-radius: 4px 4px 0 0;
+  transform-origin: bottom;
+  animation: weekGrow 500ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 40ms + 100ms);
+}
+.weekSigned {
+  margin-bottom: 20px;
+  border-bottom: 0;
+  background: linear-gradient(var(--color-ink-mute), var(--color-ink-mute)) center / 100% 1px
+    no-repeat;
+}
+.weekSigned .weekBar {
+  position: absolute;
+  bottom: 50%;
+}
+.weekSigned .weekRefund {
+  top: 50%;
+  bottom: auto;
+  border-radius: 0 0 4px 4px;
+  background: var(--color-danger);
+  transform-origin: top;
+}
+.weekValue {
+  position: absolute;
+  left: 50%;
+  translate: -50% 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-ink-soft);
+}
+.weekDay {
+  overflow: hidden;
+  text-align: center;
+  font-size: var(--text-caption);
+  color: var(--color-ink-mute);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes weekGrow {
+  from {
+    transform: scaleY(0);
+  }
+}
+@media (min-width: 768px) {
+  .weekPlot {
+    height: 150px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .weekBar {
+    animation: none;
+  }
+}

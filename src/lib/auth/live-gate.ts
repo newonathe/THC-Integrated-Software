@@ -1,0 +1,219 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { isAuthRetryableFetchError } from '@/lib/supabase/auth-errors';
+import type { Database } from '@/lib/types/database';
+import type { Role } from '@/store/engine/ops-engine';
+import { clearStoredBooks } from '@/lib/data/live-state';
+import { clearIdleSpent, clearRememberedCheck } from '@/lib/auth/offline-trust';
+import { clearStaffName } from '@/lib/auth/staff-name';
+import { clearStallCopy } from '@/lib/offline/stall-copy';
+
+/** How long the logout call may take before the session is cleared by hand. */
+export const SIGN_OUT_LIMIT_MS = 5_000;
+
+const ROLES: readonly Role[] = ['owner', 'helper', 'support'];
+
+function isRole(value: string): value is Role {
+  return (ROLES as readonly string[]).includes(value);
+}
+
+export type ProfileCheck =
+  | {
+      status: 'ok';
+      role: Role;
+      userId?: string;
+      /** S3: the helper's access ends at this moment (ms), or absent for none. */
+      expiresAt?: number;
+      /** S3: the account was made with a temporary password that has not been replaced yet. */
+      mustChangePassword?: boolean;
+    }
+  /** S3: a helper whose access has ended, by time (a definite answer, never a network failure). The app says so and offers sign-out. */
+  | { status: 'expired' }
+  /** A definite, positive denial: no user, an explicit auth error, or an inactive/missing/unrecognised profile row. */
+  | { status: 'denied' }
+  /** The check could not be completed — offline, a timed-out fetch, a transient server error. Not evidence of anything. */
+  | { status: 'unknown' };
+
+/**
+ * The own profile row. A database without migration 95 has no `access_expires_at`: asking for it fails with 42703 (or PGRST204),
+ * so the read is made again without it and the app behaves as before (no expiry exists there).
+ */
+async function readProfile(supabase: SupabaseClient<Database>, id: string) {
+  const first = await supabase
+    .from('profiles')
+    .select('role, active, access_expires_at')
+    .eq('id', id)
+    .maybeSingle();
+  if (first.error && ['42703', 'PGRST204', 'PGRST200'].includes(first.error.code ?? '')) {
+    const second = await supabase
+      .from('profiles')
+      .select('role, active')
+      .eq('id', id)
+      .maybeSingle();
+    return {
+      data: second.data ? { ...second.data, access_expires_at: null as string | null } : null,
+      error: second.error
+    };
+  }
+  return first;
+}
+
+/**
+ * The live-mode identity check. `getUser()` is used rather than `getSession()` because it
+ * round-trips through Supabase Auth and so cannot be satisfied by a stale or revoked token
+ * merely sitting in storage; `getSession()` only reads local storage.
+ *
+ * The "own profile" RLS policy (`supabase/migrations/20260101000000_init.sql`) has no
+ * `active` filter, so a deactivated account can still read its own row and see
+ * `active: false` — that is exactly the signal `denied` depends on for that case.
+ *
+ * This deliberately separates a positive denial from an inconclusive one. A network
+ * failure (offline, a dropped connection, a server timeout) is not evidence that the
+ * account is invalid, and the caller must not treat it as one: on a bazaar phone with no
+ * signal, signing the till out because a background re-check timed out would stop it
+ * selling for no security reason at all. The caller (`src/components/app/live-gate.tsx`)
+ * fails closed on `unknown` only for the *first* check of a session (nothing has been
+ * verified yet, so there is nothing to lose by waiting), and holds the current state on
+ * `unknown` for every later re-check.
+ */
+export async function checkStaffProfile(supabase: SupabaseClient<Database>): Promise<ProfileCheck> {
+  let userResult;
+  try {
+    userResult = await supabase.auth.getUser();
+  } catch (error) {
+    return isAuthRetryableFetchError(error) ? { status: 'unknown' } : { status: 'denied' };
+  }
+  const { data: userData, error: userError } = userResult;
+  if (userError)
+    return isAuthRetryableFetchError(userError) ? { status: 'unknown' } : { status: 'denied' };
+  if (!userData.user) return { status: 'denied' };
+
+  let profileResult;
+  try {
+    profileResult = await readProfile(supabase, userData.user.id);
+  } catch {
+    return { status: 'unknown' };
+  }
+  const { data, error } = profileResult;
+  // A query-level error (timeout, transient server error) is not the same as RLS
+  // returning zero rows — the latter is a real, positive "no such active profile".
+  if (error) return { status: 'unknown' };
+  if (!data || !data.active || !isRole(data.role)) return { status: 'denied' };
+  // S3: past the expiry the database gives the profile no role, and the app says so instead of signing it out blindly.
+  const until = data.access_expires_at ? Date.parse(data.access_expires_at) : null;
+  if (until !== null && Number.isFinite(until) && until <= Date.now()) return { status: 'expired' };
+
+  return {
+    status: 'ok',
+    role: data.role,
+    userId: userData.user.id,
+    ...(until !== null && Number.isFinite(until) ? { expiresAt: until } : {}),
+    ...(userData.user.user_metadata?.must_change_password === true
+      ? { mustChangePassword: true }
+      : {})
+  };
+}
+
+/**
+ * Every cookie name Supabase's `@supabase/ssr` browser client can store a session under:
+ * `sb-<project-ref>-auth-token`, chunked into `.0`, `.1`, … when the session is too large
+ * for one cookie.
+ */
+const SESSION_COOKIE = /^sb-.*-auth-token(\.\d+)?$/;
+
+/**
+ * Removes every Supabase session cookie directly, bypassing supabase-js entirely.
+ *
+ * This exists because `signOut()` cannot be trusted to have done it: in the installed
+ * `@supabase/auth-js` (2.115.0), `_signOut` calls `__loadSession` first, which attempts a
+ * token refresh whenever the access token is within its expiry margin or already expired.
+ * Offline, that refresh fails with a retryable error and `_signOut` returns *before*
+ * calling `_removeSession` — the session, including the refresh token, is left in storage.
+ * Verified against the installed package with an unreachable URL: a valid, unexpired
+ * access token is cleared correctly, but an expired one is not. An idle sign-out with no
+ * signal is exactly the expired-token case, so this cannot be left to `signOut()` alone.
+ */
+function clearSessionCookies(): void {
+  if (typeof document === 'undefined') return;
+  for (const pair of document.cookie.split(';')) {
+    const name = pair.split('=')[0]?.trim();
+    if (name && SESSION_COOKIE.test(name))
+      document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+  }
+}
+
+/**
+ * True when a Supabase session is still stored on this device. It says nothing about whether
+ * the session is valid (only the server can), so it never opens anything by itself: the live
+ * gate requires it, on top of the offline bounds, before Bazaar Mode opens with no signal (A2).
+ */
+export function hasStoredSession(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.cookie
+    .split(';')
+    .some((pair) => SESSION_COOKIE.test(pair.split('=')[0]?.trim() ?? ''));
+}
+
+/**
+ * The one lock-out path, shared by an invalid/expired profile check and idle sign-out.
+ *
+ * `scope: 'local'` only (never the default 'global'): a bazaar phone signing itself out
+ * must not also sign the owner out on her own phone. This never touches
+ * `src/lib/offline/queue.ts` — a queued offline sale is IndexedDB, not the Supabase auth
+ * session, and MASTER-PLAN invariant 2 requires it to survive this call untouched.
+ *
+ * `signOut()`'s own result is checked, and its storage is force-cleared on any error, per
+ * `clearSessionCookies`'s doc comment — otherwise an offline lock-out can leave a live
+ * refresh token behind, which a later `getSession()`/auto-refresh would silently revive
+ * once connectivity returns, undoing the lock-out with no re-authentication.
+ *
+ * A full navigation (`location.replace`), not the router: it deliberately drops all
+ * in-memory engine state along with the session.
+ *
+ * `clearStoredBooks()` runs first, and independently of the sign-out call's outcome, so a
+ * shared device loses the live `hc-ops-state-v1` residue even if `signOut` hangs or fails.
+ *
+ * Slice A2: the remembered check (`src/lib/auth/offline-trust.ts`) and the stall copy are
+ * cleared here too, before anything that can fail, so no lock-out path leaves a phone able to
+ * open Bazaar Mode offline afterwards. The running event (`hc-live-bazaar`) and the queue stay.
+ * The idle mark is the one thing cleared last, once the session is gone: cleared first, a
+ * reload while `signOut` hangs on a weak signal would find a session and no mark.
+ */
+export async function signOutLocal(supabase: SupabaseClient<Database>): Promise<void> {
+  clearStoredBooks();
+  clearRememberedCheck();
+  // B2: the next person to sign in on this phone never sells under this one's name.
+  clearStaffName();
+  clearStallCopy();
+  // supabase-js puts no time limit on its logout call, and dead stall Wi-Fi still reports
+  // online: unbounded, a sign-out could wait for ever with the session still on the phone. Past
+  // the limit it is treated like a failed call (the cookies are cleared by hand). The call is
+  // still running, and may write a refreshed session back before it removes it, so the cookies
+  // are cleared again whenever it settles. That is safe: signing in again needs a page load,
+  // which ends this call.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const slow = new Promise<'slow'>((resolve) => {
+      timer = setTimeout(() => resolve('slow'), SIGN_OUT_LIMIT_MS);
+    });
+    const call = supabase.auth.signOut({ scope: 'local' });
+    const result = await Promise.race([call, slow]);
+    if (result === 'slow') {
+      clearSessionCookies();
+      void call.then(clearSessionCookies, clearSessionCookies);
+    } else if (result.error) clearSessionCookies();
+  } catch {
+    clearSessionCookies();
+  } finally {
+    clearTimeout(timer);
+  }
+  clearIdleSpent();
+}
+
+/** `signOutLocal`, then the sign-in page. The gate skips the redirect when that page cannot load. */
+export async function signOutAndRedirect(
+  supabase: SupabaseClient<Database>,
+  nextPath: string
+): Promise<void> {
+  await signOutLocal(supabase);
+  window.location.replace('/sign-in?next=' + encodeURIComponent(nextPath));
+}

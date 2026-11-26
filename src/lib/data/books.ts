@@ -1,0 +1,433 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Database, Json } from '@/lib/types/database';
+import { centavosToPesos } from '@/lib/money';
+import { csvTextCell } from '@/lib/csv';
+import { manilaStamp } from '@/lib/time/business-clock';
+
+/**
+ * The owner's books (E1; `get_books` / `record_expense` / `record_cost_correction` / `set_cost_basis`, migration 20260101004900).
+ * Revenue is each order when it was first paid (less refunds) and each stall sale; costs are each delivery when it was bought or,
+ * by the owner's choice, stock when it was used; plain expenses are in her categories. The database works out every line: this file
+ * mirrors the bounds of what the owner enters (`expenseError`, `correctionError`), turns the lines into the engine's ledger entries
+ * (`engineLedger`) and writes the CSV (`booksCsv`).
+ */
+export type BooksClient = Pick<SupabaseClient<Database>, 'rpc'>;
+
+export type CostBasis = 'bought' | 'used';
+
+export interface BookLine {
+  id: string;
+  kind: 'revenue' | 'refund' | 'expense' | 'draw';
+  cat: string;
+  label: string;
+  /** Centavos: positive, except a correcting expense, which is negative when it lowers a cost. */
+  amountCents: number;
+  /** Epoch milliseconds. */
+  at: number;
+}
+
+export interface ReceiptRow {
+  movementId: string;
+  item: string;
+  qty: number;
+  costCents: number;
+  supplier: string;
+  at: number;
+}
+
+/**
+ * Stock used, wasted, or counted or adjusted down whose cost is not known (never a zero line in the books): a movement, or a
+ * production line that could not be taken.
+ */
+export interface UncostedRow {
+  id: string;
+  kind: 'use' | 'waste' | 'count' | 'adjust';
+  item: string;
+  qty: number;
+  unit: string;
+  /** Epoch milliseconds. */
+  at: number;
+  why?: string;
+}
+
+/**
+ * A bazaar that is not closed yet (S3): its sales and the expenses added at its till are left out of `lines` until the
+ * event is closed, and counted here instead, for the period asked.
+ */
+export interface HeldBazaar {
+  scheduledId: string;
+  name: string;
+  /** How many book lines are held back. */
+  count: number;
+  revenueCents: number;
+  expenseCents: number;
+}
+
+export interface Books {
+  basis: CostBasis;
+  lines: BookLine[];
+  /** Empty when the answer has none (a database before B3b, or the "bought" basis). */
+  uncosted: UncostedRow[];
+  receipts: ReceiptRow[];
+  /** Empty when no bazaar is in progress (or on a database before the bazaar days). */
+  held: HeldBazaar[];
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** Strict: anything unexpected is no answer at all, so the screens never show half of the books. */
+export function parseBooks(json: Json | null | undefined): Books | null {
+  if (!isObj(json) || (json.basis !== 'bought' && json.basis !== 'used')) return null;
+  if (!Array.isArray(json.lines) || !Array.isArray(json.receipts)) return null;
+  const lines: BookLine[] = [];
+  for (const l of json.lines) {
+    if (
+      !isObj(l) ||
+      typeof l.id !== 'string' ||
+      (l.kind !== 'revenue' && l.kind !== 'refund' && l.kind !== 'expense' && l.kind !== 'draw') ||
+      typeof l.cat !== 'string' ||
+      typeof l.label !== 'string' ||
+      typeof l.amount_cents !== 'number' ||
+      typeof l.at !== 'number'
+    )
+      return null;
+    lines.push({
+      id: l.id,
+      kind: l.kind,
+      cat: l.cat,
+      label: l.label,
+      amountCents: l.amount_cents,
+      at: l.at
+    });
+  }
+  const receipts: ReceiptRow[] = [];
+  for (const r of json.receipts) {
+    if (
+      !isObj(r) ||
+      typeof r.movement_id !== 'string' ||
+      typeof r.item !== 'string' ||
+      typeof r.qty !== 'number' ||
+      typeof r.cost_cents !== 'number' ||
+      typeof r.supplier !== 'string' ||
+      typeof r.at !== 'number'
+    )
+      return null;
+    receipts.push({
+      movementId: r.movement_id,
+      item: r.item,
+      qty: r.qty,
+      costCents: r.cost_cents,
+      supplier: r.supplier,
+      at: r.at
+    });
+  }
+  const held = parseHeld(json.held);
+  if (!held) return null;
+  return { basis: json.basis, lines, uncosted: parseUncosted(json.uncosted), receipts, held };
+}
+
+/**
+ * Absent means none. Anything else that cannot be read is no answer at all, unlike `uncosted`: this list says why money
+ * is missing from the totals, so the books are never shown without it.
+ */
+function parseHeld(json: unknown): HeldBazaar[] | null {
+  if (json === undefined) return [];
+  if (!Array.isArray(json)) return null;
+  const rows: HeldBazaar[] = [];
+  for (const h of json) {
+    if (
+      !isObj(h) ||
+      typeof h.scheduled_id !== 'string' ||
+      typeof h.name !== 'string' ||
+      typeof h.count !== 'number' ||
+      !Number.isInteger(h.count) ||
+      h.count < 0 ||
+      typeof h.revenue_cents !== 'number' ||
+      !Number.isSafeInteger(h.revenue_cents) ||
+      typeof h.expense_cents !== 'number' ||
+      !Number.isSafeInteger(h.expense_cents)
+    )
+      return null;
+    rows.push({
+      scheduledId: h.scheduled_id,
+      name: h.name,
+      count: h.count,
+      revenueCents: h.revenue_cents,
+      expenseCents: h.expense_cents
+    });
+  }
+  return rows;
+}
+
+/** A row that cannot be read is left out, not the whole answer: the list is a notice, never part of a total. */
+function parseUncosted(json: unknown): UncostedRow[] {
+  if (!Array.isArray(json)) return [];
+  const rows: UncostedRow[] = [];
+  for (const u of json) {
+    if (
+      !isObj(u) ||
+      typeof u.id !== 'string' ||
+      (u.kind !== 'use' && u.kind !== 'waste' && u.kind !== 'count' && u.kind !== 'adjust') ||
+      typeof u.item !== 'string' ||
+      typeof u.qty !== 'number' ||
+      !Number.isFinite(u.qty) ||
+      typeof u.unit !== 'string' ||
+      typeof u.at !== 'number' ||
+      (u.why !== undefined && typeof u.why !== 'string')
+    )
+      continue;
+    rows.push({
+      id: u.id,
+      kind: u.kind,
+      item: u.item,
+      qty: u.qty,
+      unit: u.unit,
+      at: u.at,
+      ...(u.why !== undefined ? { why: u.why } : {})
+    });
+  }
+  return rows;
+}
+
+export async function fetchBooks(
+  client: BooksClient,
+  fromMs: number,
+  toMs: number
+): Promise<Books> {
+  const { data, error } = await client.rpc('get_books', {
+    p_from: new Date(fromMs).toISOString(),
+    p_to: new Date(toMs).toISOString()
+  });
+  if (error) throw new Error('books load failed: ' + (error.code || error.message));
+  const books = parseBooks(data);
+  if (!books) throw new Error('books answer was not understood');
+  return books;
+}
+
+/**
+ * The engine's ledger entries (`{ id, kind, at, cat, label, amount }`, positive pesos): a paid order is revenue under 'Drops' (which
+ * the P&L reads as booked drops), a stall sale is revenue under 'Bazaar', a refund is a refund, every cost is an expense, and
+ * money the owner took out is a draw (outside expenses, so profit does not move).
+ */
+export function engineLedger(lines: readonly BookLine[]) {
+  return lines.map((l) => ({
+    id: l.id,
+    kind: l.kind,
+    at: l.at,
+    cat:
+      l.kind === 'revenue' && l.cat === 'Orders'
+        ? 'Drops'
+        : l.kind === 'draw'
+          ? 'Owner drawings'
+          : l.cat,
+    label: l.label,
+    amount: centavosToPesos(l.amountCents)
+  }));
+}
+
+/** The books as a spreadsheet: one row per line, oldest first, dated on the shop's clock, amounts in pesos (a refund and an expense are costs to the business). */
+export function booksCsv(books: Books): string {
+  const rows = [
+    ['Date', 'Type', 'Category', 'Description', 'Amount (pesos)', 'Cost basis'].join(',')
+  ];
+  for (const l of [...books.lines].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id)))
+    rows.push(
+      [
+        csvTextCell(manilaStamp(l.at)),
+        csvTextCell(l.kind),
+        csvTextCell(l.cat),
+        csvTextCell(l.label),
+        (l.amountCents / 100).toFixed(2),
+        csvTextCell(books.basis)
+      ].join(',')
+    );
+  return rows.join('\n') + '\n';
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+const validAt = (at: number): boolean =>
+  Number.isInteger(at) && at >= 100_000_000_000 && at <= 99_999_999_999_999;
+
+export interface ExpenseFields {
+  id: string;
+  category: string;
+  memo: string;
+  amountCents: number;
+  at: number;
+}
+
+/** The same bounds `record_expense` enforces. Null means the expense is acceptable. */
+export function expenseError(f: ExpenseFields): string | null {
+  if (!UUID.test(f.id)) return 'This change has no id yet. Reload and try again.';
+  const category = f.category.trim();
+  const memo = f.memo.trim();
+  if (
+    category.length < 1 ||
+    category.length > 60 ||
+    memo.length > 120 ||
+    CONTROL.test(category + memo)
+  )
+    return 'A category is 1 to 60 characters and a description at most 120.';
+  if (!Number.isInteger(f.amountCents) || f.amountCents < 1 || f.amountCents > 100_000_000)
+    return 'An amount is from ₱0.01 to ₱1,000,000.';
+  if (!validAt(f.at)) return 'The time is not valid.';
+  return null;
+}
+
+export interface DrawFields {
+  id: string;
+  memo: string;
+  amountCents: number;
+  at: number;
+}
+
+/** The same bounds `record_draw` enforces. Null means the draw is acceptable. */
+export function drawError(f: DrawFields): string | null {
+  if (!UUID.test(f.id)) return 'This change has no id yet. Reload and try again.';
+  const memo = f.memo.trim();
+  if (memo.length > 120 || CONTROL.test(memo)) return 'A description is at most 120 characters.';
+  if (!Number.isInteger(f.amountCents) || f.amountCents < 1 || f.amountCents > 100_000_000)
+    return 'An amount is from ₱0.01 to ₱1,000,000.';
+  if (!validAt(f.at)) return 'The time is not valid.';
+  return null;
+}
+
+export interface CorrectionFields {
+  id: string;
+  movementId: string;
+  costCents: number;
+  at: number;
+}
+
+/** The same bounds `record_cost_correction` enforces. Null means the correction is acceptable. */
+export function correctionError(f: CorrectionFields): string | null {
+  if (!UUID.test(f.id) || !UUID.test(f.movementId))
+    return 'This change has no id yet. Reload and try again.';
+  if (!Number.isInteger(f.costCents) || f.costCents < 0 || f.costCents > 100_000_000)
+    return 'A cost is from ₱0 to ₱1,000,000.';
+  if (!validAt(f.at)) return 'The time is not valid.';
+  return null;
+}
+
+export type BooksOutcome = 'saved' | 'refused' | 'offline';
+
+function classify(code: string | undefined): BooksOutcome {
+  return ['22023', '23505', '42501', 'P0002', '23503'].includes(code ?? '') ? 'refused' : 'offline';
+}
+
+/** Sends one expense. `saved` includes an identical retry (answered, never applied twice). */
+export async function recordExpense(client: BooksClient, f: ExpenseFields): Promise<BooksOutcome> {
+  try {
+    const { data, error } = await client.rpc('record_expense', {
+      p_expense: {
+        id: f.id,
+        category: f.category.trim(),
+        memo: f.memo.trim(),
+        amount_cents: f.amountCents,
+        at: f.at
+      }
+    });
+    if (error) return classify(error.code);
+    const row = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
+    return row && typeof row.duplicate === 'boolean' ? 'saved' : 'offline';
+  } catch {
+    return 'offline';
+  }
+}
+
+/** Sends one draw. `saved` includes an identical retry (answered, never applied twice). */
+export async function recordDraw(client: BooksClient, f: DrawFields): Promise<BooksOutcome> {
+  try {
+    const { data, error } = await client.rpc('record_draw', {
+      p_draw: { id: f.id, memo: f.memo.trim(), amount_cents: f.amountCents, at: f.at }
+    });
+    if (error) return classify(error.code);
+    const row = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
+    return row && typeof row.duplicate === 'boolean' ? 'saved' : 'offline';
+  } catch {
+    return 'offline';
+  }
+}
+
+/** Sends one correction of a delivery's cost. `saved` includes an identical retry. */
+export async function recordCostCorrection(
+  client: BooksClient,
+  f: CorrectionFields
+): Promise<BooksOutcome> {
+  try {
+    const { data, error } = await client.rpc('record_cost_correction', {
+      p_corr: { id: f.id, movement_id: f.movementId, cost_cents: f.costCents, at: f.at }
+    });
+    if (error) return classify(error.code);
+    const row = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
+    return row && typeof row.duplicate === 'boolean' ? 'saved' : 'offline';
+  } catch {
+    return 'offline';
+  }
+}
+
+export async function saveCostBasis(client: BooksClient, basis: CostBasis): Promise<BooksOutcome> {
+  try {
+    const { data, error } = await client.rpc('set_cost_basis', { p_basis: basis });
+    if (error) return classify(error.code);
+    return data === basis ? 'saved' : 'offline';
+  } catch {
+    return 'offline';
+  }
+}
+
+/** What an order must be (a slice of `StaffOrder`) to be counted by the unpaid tracker. */
+export interface UnpaidSource {
+  id: string;
+  name: string;
+  state: string;
+  payState: string;
+  totalCents: number;
+  paidCents: number | null;
+  placedAt: number;
+}
+
+export interface UnpaidRow {
+  id: string;
+  name: string;
+  /** What is still owed, centavos. */
+  owedCents: number;
+  /** `unpaid`: nothing paid yet. `claimed`: the customer says they paid, not confirmed. `balance`: part paid, the rest owed. */
+  status: 'unpaid' | 'claimed' | 'balance';
+  /** Whole days since the order was placed. */
+  days: number;
+}
+
+export interface Unpaid {
+  rows: UnpaidRow[];
+  totalCents: number;
+}
+
+/**
+ * The orders that are still owed money, oldest first: nothing paid (or a payment claimed but not confirmed) on an order that is still on,
+ * and the unpaid balance of a part-paid order. A cancelled order and a no-show owe nothing, and a refunded order is neither unpaid nor part paid.
+ */
+export function unpaidOrders(orders: readonly UnpaidSource[], now: number): Unpaid {
+  const rows: UnpaidRow[] = [];
+  for (const o of orders) {
+    if (o.state === 'Cancelled' || o.state === 'No-show') continue;
+    const paid = o.paidCents ?? 0;
+    let status: UnpaidRow['status'] | null = null;
+    if (o.payState === 'unpaid' || o.payState === 'claimed') status = o.payState;
+    else if (o.payState !== 'refunded' && paid < o.totalCents) status = 'balance'; // paid, with a balance left
+    if (!status) continue;
+    const owedCents = o.totalCents - (status === 'balance' ? paid : 0);
+    if (owedCents <= 0) continue;
+    rows.push({
+      id: o.id,
+      name: o.name,
+      owedCents,
+      status,
+      days: Math.max(0, Math.floor((now - o.placedAt) / 86_400_000))
+    });
+  }
+  rows.sort((a, b) => b.days - a.days || a.id.localeCompare(b.id));
+  return { rows, totalCents: rows.reduce((n, r) => n + r.owedCents, 0) };
+}

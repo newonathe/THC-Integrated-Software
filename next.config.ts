@@ -1,0 +1,90 @@
+import type { NextConfig } from 'next';
+import { withSentryConfig } from '@sentry/nextjs/config';
+
+const config: NextConfig = {
+  reactStrictMode: true,
+  // Keep the shared, budgeted the project rules/the project rules authority under project control.
+  agentRules: false,
+  // Vercel's adapter packages its own runtime; standalone remains for local/Docker use.
+  output: process.env.VERCEL === '1' ? undefined : 'standalone',
+  poweredByHeader: false,
+  // Live screens are only drawn when NEXT_PUBLIC_APP_MODE is 'live'. In every other build the
+  // module that registers them is swapped for an empty one, so ~80 live-only modules stay out of
+  // the demo bundle (Lighthouse budget). The live build (the static-export build script) writes
+  // its own next.config and never reads this file, so it still gets the real register-all.
+  webpack(webpackConfig, { webpack, isServer }) {
+    // A demo build with no backend never creates a Supabase client (every caller checks live mode or
+    // hasSupabaseConfig() first), so its browser bundle swaps the two SDK entry points for stubs: the SDK was ~860 KB of
+    // unused source on every page and the main cause of /bazaar's blocking time (HCB-083). Server code, the live build
+    // and any demo build with Supabase configured (the Vercel demo) keep the real client.
+    const noBackend =
+      !process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    if (process.env.NEXT_PUBLIC_APP_MODE !== 'live' && !isServer && noBackend) {
+      webpackConfig.plugins.push(
+        new webpack.NormalModuleReplacementPlugin(
+          /lib[\\/]supabase[\\/](client|auth-errors)$/,
+          (resource: { request: string }) => {
+            resource.request = resource.request.replace(/(client|auth-errors)$/, '$1-none');
+          }
+        )
+      );
+    }
+    if (process.env.NEXT_PUBLIC_APP_MODE !== 'live') {
+      webpackConfig.plugins.push(
+        new webpack.NormalModuleReplacementPlugin(
+          /components[\\/]live[\\/]register-all$/,
+          (resource: { request: string }) => {
+            resource.request = resource.request.replace(/register-all$/, 'register-none');
+          }
+        )
+      );
+    }
+    return webpackConfig;
+  },
+  // The books live on the device until Postgres is wired,
+  // so nothing in this app may be cached by a shared proxy.
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' }
+        ]
+      },
+      { source: '/sw.js', headers: [{ key: 'Cache-Control', value: 'no-cache' }] }
+    ];
+  }
+};
+
+/**
+ * Sentry wraps the config to upload source maps at build time — without them a
+ * production stack trace is minified line numbers and useless.
+ *
+ * `tunnelRoute` proxies reports through this app's own origin so an ad blocker on the
+ * owner's phone cannot silently swallow them, which is a real failure mode: you conclude
+ * there are no errors because none arrive.
+ */
+export default withSentryConfig(config, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  silent: !process.env.CI,
+  widenClientFileUpload: true,
+  tunnelRoute: '/monitoring',
+  // The source maps are uploaded to Sentry; shipping them to the browser as well would
+  // hand the whole codebase to anyone who opens dev tools.
+  sourcemaps: { deleteSourcemapsAfterUpload: true },
+  // Tracing and session replay are off everywhere (sample rates 0), so their SDK code is dead
+  // weight on every cold start: about 57 KB gzipped of the browser's first load (T-18).
+  webpack: {
+    treeshake: {
+      removeDebugLogging: true,
+      removeTracing: true,
+      excludeReplayIframe: true,
+      excludeReplayShadowDOM: true,
+      excludeReplayCompressionWorker: true
+    }
+  }
+});

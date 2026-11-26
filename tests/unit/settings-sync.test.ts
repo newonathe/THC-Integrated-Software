@@ -1,0 +1,514 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CFG } from '@/store/engine/ops-engine';
+import type { Role } from '@/store/engine/ops-engine';
+import { dbValueFor, type SettingsClient, type SettingsRow } from '@/lib/data/settings';
+import {
+  SAVE_DEBOUNCE_MS,
+  SETTINGS_TOASTS,
+  SettingsSync,
+  type SettingsHost
+} from '@/lib/data/settings-sync';
+
+/**
+ * MP-09 b2: settings load into `cfg` on sign-in and save through `save_setting`, debounced
+ * per key, with conflict reload and offline revert. The client is faked at the `rpc` level,
+ * so these exercise the real adapter (`src/lib/data/settings.ts`) and the real error codes
+ * the migration raises (`P0002` stale, `22023` validation).
+ */
+const COST_KEYS = [
+  'taxRate',
+  'drawerFloat',
+  'groceryBudget',
+  'packagingFee',
+  'flatBoxPrice',
+  'cogsMultiple'
+];
+
+function row(key: string, values: Partial<SettingsRow>): SettingsRow {
+  return {
+    key,
+    int_value: null as unknown as number,
+    text_value: null as unknown as string,
+    cents_value: null as unknown as number,
+    json_value: null,
+    is_default: false,
+    updated_at: '2026-09-27T01:00:00.000Z',
+    ...values
+  };
+}
+
+type RpcResult = { data: unknown; error: { code: string; message: string } | null };
+
+function fakeClient(
+  handlers: Record<string, (args?: Record<string, unknown>) => RpcResult | Promise<RpcResult>>
+) {
+  const rpc = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+    const handler = handlers[name];
+    if (!handler) throw new Error('unexpected rpc ' + name);
+    return handler(args);
+  });
+  return { client: { rpc } as unknown as SettingsClient, rpc };
+}
+
+function fakeHost(role: Role, start: Record<string, unknown> = { ...DEFAULT_CFG }) {
+  const host = {
+    cfgState: { ...start } as Record<string, unknown>,
+    isOnline: true,
+    toasts: [] as string[],
+    role: () => role,
+    read: (key: string) => host.cfgState[key],
+    apply: (patch: Record<string, unknown>) => {
+      host.cfgState = { ...host.cfgState, ...patch };
+    },
+    online: () => host.isOnline,
+    toast: (message: string) => {
+      host.toasts.push(message);
+    }
+  };
+  return host satisfies SettingsHost;
+}
+
+const OWNER_ROWS = [
+  row('capacity', { int_value: 320 }),
+  row('taxRate', { json_value: 5 }),
+  row('channels', { json_value: { 'New order': false, 'Low stock': true } }),
+  row('categories', { json_value: ['Ingredients', 'Packaging', 'Delivery'] }),
+  // bigint columns can arrive as strings through the client; centavosFromDb handles both.
+  row('packagingFee', { cents_value: '4250' as unknown as number }),
+  row('drawerFloat', { cents_value: 150000 }),
+  row('priceMode', { text_value: 'Flat price per box' }),
+  row('retention', { text_value: '2 years' }),
+  row('idleMinutesHelper', { int_value: 180 })
+];
+
+describe('SettingsSync.load', () => {
+  it('loads the owner’s real database values into cfg, converting centavos to pesos', async () => {
+    const { client, rpc } = fakeClient({ get_settings: () => ({ data: OWNER_ROWS, error: null }) });
+    const host = fakeHost('owner');
+    await expect(new SettingsSync(client, host).load(DEFAULT_CFG)).resolves.toBe(true);
+
+    expect(rpc).toHaveBeenCalledWith('get_settings');
+    expect(host.cfgState).toMatchObject({
+      capacity: 320,
+      taxRate: 5,
+      packagingFee: 42.5,
+      drawerFloat: 1500,
+      priceMode: 'Flat price per box',
+      retention: '2 years',
+      idleMinutesHelper: 180
+    });
+  });
+
+  it('loads the staff projection for a helper and never shows a cost key from the device', async () => {
+    const { client, rpc } = fakeClient({
+      get_operating_settings: () => ({
+        data: [row('capacity', { int_value: 320 }), row('maxPerOrder', { int_value: 12 })],
+        error: null
+      })
+    });
+    // A stale value left in memory (a cost key the helper must not see) is replaced by the default.
+    const host = fakeHost('helper', { ...DEFAULT_CFG, packagingFee: 99, taxRate: 9 });
+    await new SettingsSync(client, host).load(DEFAULT_CFG);
+
+    expect(rpc).toHaveBeenCalledWith('get_operating_settings');
+    expect(rpc).not.toHaveBeenCalledWith('get_settings');
+    expect(host.cfgState).toMatchObject({ capacity: 320, maxPerOrder: 12 });
+    for (const key of COST_KEYS) expect(host.cfgState[key]).toBe(DEFAULT_CFG[key]);
+  });
+
+  it('keeps the defaults when the read fails', async () => {
+    const { client } = fakeClient({
+      get_operating_settings: () => ({
+        data: null,
+        error: { code: '', message: 'Failed to fetch' }
+      })
+    });
+    const host = fakeHost('support');
+    await expect(new SettingsSync(client, host).load(DEFAULT_CFG)).resolves.toBe(false);
+    expect(host.cfgState).toEqual({ ...DEFAULT_CFG });
+  });
+});
+
+describe('SettingsSync saves', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  async function loadedOwner(handlers: Parameters<typeof fakeClient>[0]) {
+    const faked = fakeClient({
+      get_settings: () => ({ data: OWNER_ROWS, error: null }),
+      ...handlers
+    });
+    const host = fakeHost('owner');
+    const sync = new SettingsSync(faked.client, host);
+    // The engine's defaults for every setting key, lists included (OpsRuntime passes
+    // DEFAULT_CFG plus BASE_STATE()'s channels/categories/inactiveCats the same way).
+    await sync.load({
+      ...DEFAULT_CFG,
+      channels: {},
+      categories: ['Ingredients'],
+      inactiveCats: []
+    });
+    faked.rpc.mockClear();
+    return { ...faked, host, sync };
+  }
+
+  const saves = (rpc: ReturnType<typeof vi.fn>) =>
+    rpc.mock.calls.filter(([name]) => name === 'save_setting');
+
+  it('coalesces a fast run of edits into one save with the value and updated_at it last read', async () => {
+    const { rpc, host, sync } = await loadedOwner({
+      save_setting: () => ({
+        data: [{ key: 'capacity', updated_at: '2026-09-27T02:00:00.000Z' }],
+        error: null
+      })
+    });
+    for (const capacity of [330, 340, 350, 360]) {
+      host.apply({ capacity });
+      sync.queue('capacity');
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS - 100);
+    }
+    expect(saves(rpc)).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(saves(rpc)).toEqual([
+      [
+        'save_setting',
+        { p_key: 'capacity', p_value: 360, p_expected_updated_at: '2026-09-27T01:00:00.000Z' }
+      ]
+    ]);
+    expect(host.toasts).toEqual([]);
+  });
+
+  it('sends money back as centavos, and a key still at its default with a null updated_at', async () => {
+    const { rpc, host, sync } = await loadedOwner({
+      save_setting: () => ({
+        data: [{ key: 'groceryBudget', updated_at: '2026-09-27T02:00:00.000Z' }],
+        error: null
+      })
+    });
+    host.apply({ groceryBudget: 6500 });
+    sync.queue('groceryBudget');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(saves(rpc)[0]?.[1]).toEqual({
+      p_key: 'groceryBudget',
+      p_value: 650000,
+      p_expected_updated_at: null
+    });
+  });
+
+  it('on a conflict reloads and toasts, keeping an unrelated edit that is still waiting to save', async () => {
+    let reloads = 0;
+    const { rpc, host, sync } = await loadedOwner({
+      save_setting: ({ p_key } = {}) =>
+        p_key === 'capacity'
+          ? { data: null, error: { code: 'P0002', message: 'settings save conflict: capacity' } }
+          : { data: [{ key: String(p_key), updated_at: '2026-09-27T03:00:00.000Z' }], error: null }
+    });
+    rpc.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+      if (name === 'get_settings') {
+        reloads += 1;
+        return {
+          data: [
+            row('capacity', { int_value: 400, updated_at: '2026-09-27T02:30:00.000Z' }),
+            row('maxPerOrder', { int_value: 30, updated_at: '2026-09-27T02:30:00.000Z' })
+          ],
+          error: null
+        };
+      }
+      return args?.p_key === 'capacity'
+        ? { data: null, error: { code: 'P0002', message: 'conflict' } }
+        : {
+            data: [{ key: String(args?.p_key), updated_at: '2026-09-27T03:00:00.000Z' }],
+            error: null
+          };
+    });
+
+    host.apply({ capacity: 330 });
+    sync.queue('capacity');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS - 200);
+    host.apply({ maxPerOrder: 18 });
+    sync.queue('maxPerOrder');
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(reloads).toBe(1);
+    expect(host.toasts).toEqual([SETTINGS_TOASTS.conflict]);
+    expect(host.cfgState.capacity).toBe(400);
+    expect(host.cfgState.maxPerOrder).toBe(18);
+
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    // The waiting edit is sent against the updated_at it was made on (the default: null),
+    // not the reloaded one, so it cannot silently overwrite the other person's change.
+    expect(saves(rpc).at(-1)?.[1]).toEqual({
+      p_key: 'maxPerOrder',
+      p_value: 18,
+      p_expected_updated_at: null
+    });
+  });
+
+  it('offline: reverts the optimistic change and toasts, without calling the database', async () => {
+    const { rpc, host, sync } = await loadedOwner({});
+    host.isOnline = false;
+    host.apply({ capacity: 500 });
+    sync.queue('capacity');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(host.cfgState.capacity).toBe(320);
+    expect(host.toasts).toEqual([SETTINGS_TOASTS.offline]);
+  });
+
+  it('a request that never reaches the database is treated as offline and reverted', async () => {
+    const { host, sync } = await loadedOwner({
+      save_setting: () => {
+        throw new TypeError('Failed to fetch');
+      }
+    });
+    host.apply({ retention: '6 months' });
+    sync.queue('retention');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(host.cfgState.retention).toBe('2 years');
+    expect(host.toasts).toEqual([SETTINGS_TOASTS.offline]);
+  });
+
+  it('a value the database refuses is reverted with its own toast', async () => {
+    const { host, sync } = await loadedOwner({
+      save_setting: () => ({
+        data: null,
+        error: { code: '22023', message: 'settings value out of range' }
+      })
+    });
+    host.apply({ capacity: 590 });
+    sync.queue('capacity');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(host.cfgState.capacity).toBe(320);
+    expect(host.toasts).toEqual([SETTINGS_TOASTS.rejected]);
+  });
+
+  it('a fraction on a whole-number key is reverted on the device, never sent', async () => {
+    const { rpc, host, sync } = await loadedOwner({});
+    host.apply({ capacity: 330.5 });
+    sync.queue('capacity');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(host.cfgState.capacity).toBe(320);
+    expect(host.toasts).toEqual([SETTINGS_TOASTS.fraction]);
+  });
+
+  it('saves a 0.5 step for the tax set-aside (MP-09 b3), and refuses a quarter step', async () => {
+    const { rpc, host, sync } = await loadedOwner({
+      save_setting: ({ p_key } = {}) => ({
+        data: [{ key: String(p_key), updated_at: '2026-09-27T02:00:00.000Z' }],
+        error: null
+      })
+    });
+    host.apply({ taxRate: 5.5 });
+    sync.queue('taxRate');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(saves(rpc)).toEqual([
+      [
+        'save_setting',
+        { p_key: 'taxRate', p_value: 5.5, p_expected_updated_at: '2026-09-27T01:00:00.000Z' }
+      ]
+    ]);
+
+    host.apply({ taxRate: 5.25 });
+    sync.queue('taxRate');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(saves(rpc)).toHaveLength(1);
+    expect(host.cfgState.taxRate).toBe(5.5);
+    expect(host.toasts).toEqual([SETTINGS_TOASTS.fraction]);
+  });
+
+  it('saves the whole channels object when one alert changes, and skips a toggle-back', async () => {
+    const { rpc, host, sync } = await loadedOwner({
+      save_setting: ({ p_key } = {}) => ({
+        data: [{ key: String(p_key), updated_at: '2026-09-27T02:00:00.000Z' }],
+        error: null
+      })
+    });
+    expect(host.cfgState.channels).toEqual({ 'New order': false, 'Low stock': true });
+
+    host.apply({ channels: { 'New order': true, 'Low stock': true } });
+    sync.queue('channels');
+    host.apply({ channels: { 'New order': false, 'Low stock': true } });
+    sync.queue('channels');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(saves(rpc)).toHaveLength(0);
+
+    host.apply({ channels: { 'New order': true, 'Low stock': true } });
+    sync.queue('channels');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(saves(rpc)[0]?.[1]).toEqual({
+      p_key: 'channels',
+      p_value: { 'New order': true, 'Low stock': true },
+      p_expected_updated_at: '2026-09-27T01:00:00.000Z'
+    });
+  });
+
+  it('offline: a changed list reverts to the previous list, never to nothing', async () => {
+    const { rpc, host, sync } = await loadedOwner({});
+    host.isOnline = false;
+    host.apply({ categories: ['Ingredients', 'Packaging', 'Delivery', 'Stickers'] });
+    sync.queue('categories');
+    host.apply({ inactiveCats: ['Packaging'] });
+    sync.queue('inactiveCats');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(host.cfgState.categories).toEqual(['Ingredients', 'Packaging', 'Delivery']);
+    // inactiveCats was never saved: it goes back to the engine default passed to load().
+    expect(host.cfgState.inactiveCats).toEqual([]);
+  });
+
+  it('does nothing when the value is back to what was saved', async () => {
+    const { rpc, host, sync } = await loadedOwner({});
+    host.apply({ capacity: 330 });
+    sync.queue('capacity');
+    host.apply({ capacity: 320 });
+    sync.queue('capacity');
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe('dbValueFor', () => {
+  it('rounds pesos to whole centavos for money keys (19.99 is not 1998)', () => {
+    expect(dbValueFor('packagingFee', 19.99)).toEqual({ ok: true, value: 1999 });
+  });
+
+  it('keeps discounts in whole pesos, as migration 00700 stores them', () => {
+    expect(dbValueFor('discountA', 25)).toEqual({ ok: true, value: 25 });
+  });
+
+  it('refuses unknown keys, fractions and wrong types before any request', () => {
+    expect(dbValueFor('orders', [])).toEqual({ ok: false, reason: 'unknown' });
+    expect(dbValueFor('cogsMultiple', 4.25)).toEqual({ ok: false, reason: 'fraction' });
+    expect(dbValueFor('retention', 365)).toEqual({ ok: false, reason: 'type' });
+    expect(dbValueFor('channels', { 'New order': 'yes' })).toEqual({ ok: false, reason: 'type' });
+    expect(dbValueFor('categories', ['Ingredients', 3])).toEqual({ ok: false, reason: 'type' });
+  });
+
+  it('accepts half steps and the b3 shapes as they are', () => {
+    expect(dbValueFor('cogsMultiple', 4.5)).toEqual({ ok: true, value: 4.5 });
+    expect(dbValueFor('channels', { 'New order': true })).toEqual({
+      ok: true,
+      value: { 'New order': true }
+    });
+    expect(dbValueFor('inactiveCats', [])).toEqual({ ok: true, value: [] });
+  });
+});
+
+/**
+ * HCB-004 correction: a malformed `get_settings` / `get_operating_settings` answer is a failed
+ * read. `load` answers false and the engine keeps its defaults; `reload` patches nothing. It used
+ * to throw "rows is not iterable" (or a row's `.key` of undefined) after the try.
+ */
+describe('HCB-004: a malformed settings answer is a failed read', () => {
+  const malformed: Array<[string, unknown]> = [
+    ['an object', {}],
+    ['a string', 'x'],
+    ['a row without a key', [{ ...row('capacity', { int_value: 320 }), key: undefined }]],
+    ['an empty key', [row('', { int_value: 320 })]],
+    [
+      'an int_value that is not a number',
+      [row('capacity', { int_value: 'abc' as unknown as number })]
+    ],
+    ['a fractional int_value', [row('capacity', { int_value: 3.5 })]],
+    [
+      'a cents_value that is not a number',
+      [row('drawerFloat', { cents_value: 'abc' as unknown as number })]
+    ],
+    ['a text_value that is a number', [row('priceMode', { text_value: 5 as unknown as string })]],
+    [
+      'a good row beside a bad one',
+      [row('capacity', { int_value: 320 }), row('openH', { int_value: 'abc' as unknown as number })]
+    ]
+  ];
+  const roles: Role[] = ['owner', 'helper'];
+
+  it.each(malformed)('load answers false and applies nothing for %s', async (_name, data) => {
+    for (const role of roles) {
+      const handler = () => ({ data, error: null });
+      const { client } = fakeClient({ get_settings: handler, get_operating_settings: handler });
+      const host = fakeHost(role);
+      const apply = vi.spyOn(host, 'apply');
+      await expect(new SettingsSync(client, host).load(DEFAULT_CFG)).resolves.toBe(false);
+      expect(apply).not.toHaveBeenCalled();
+      expect(host.cfgState).toEqual(DEFAULT_CFG);
+    }
+  });
+
+  it.each(malformed)('reload answers false and patches nothing for %s', async (_name, data) => {
+    const answers: unknown[] = [OWNER_ROWS, data];
+    const { client } = fakeClient({
+      get_settings: () => ({ data: answers.shift(), error: null })
+    });
+    const host = fakeHost('owner');
+    const sync = new SettingsSync(client, host);
+    await expect(sync.load(DEFAULT_CFG)).resolves.toBe(true);
+    const after = { ...host.cfgState };
+    const apply = vi.spyOn(host, 'apply');
+    await expect(sync.reload()).resolves.toBe(false);
+    expect(apply).not.toHaveBeenCalled();
+    expect(host.cfgState).toEqual(after);
+  });
+
+  it('accepts digit strings for cents_value and int_value, as a bigint can arrive', async () => {
+    const { client } = fakeClient({
+      get_settings: () => ({
+        data: [
+          row('packagingFee', { cents_value: '4250' as unknown as number }),
+          row('capacity', { int_value: '320' as unknown as number })
+        ],
+        error: null
+      })
+    });
+    const host = fakeHost('owner');
+    await expect(new SettingsSync(client, host).load(DEFAULT_CFG)).resolves.toBe(true);
+    expect(host.cfgState.packagingFee).toBe(42.5);
+    expect(host.cfgState.capacity).toBe(320);
+  });
+
+  it('accepts a negative int_value (the table sets no sign; each key range is the server check)', async () => {
+    const { client } = fakeClient({
+      get_settings: () => ({
+        data: [
+          row('somethingNew', { int_value: -2 }),
+          row('capacity', { int_value: '-1' as unknown as number })
+        ],
+        error: null
+      })
+    });
+    const host = fakeHost('owner');
+    await expect(new SettingsSync(client, host).load(DEFAULT_CFG)).resolves.toBe(true);
+    expect(host.cfgState.capacity).toBe(-1);
+  });
+
+  it('still skips an unknown key and accepts null columns and any json_value', async () => {
+    const { client } = fakeClient({
+      get_settings: () => ({
+        data: [
+          row('somethingNew', { int_value: 7 }),
+          row('taxRate', { json_value: 5, updated_at: null as unknown as string }),
+          row('categories', { json_value: ['A'] }),
+          // A key no row has saved yet: json_value null, is_default true.
+          row('channels', {
+            json_value: null,
+            is_default: true,
+            updated_at: null as unknown as string
+          })
+        ],
+        error: null
+      })
+    });
+    const host = fakeHost('owner');
+    await expect(new SettingsSync(client, host).load(DEFAULT_CFG)).resolves.toBe(true);
+    expect(host.cfgState.taxRate).toBe(5);
+    expect('somethingNew' in host.cfgState).toBe(false);
+  });
+
+  it('still reads null data as no rows', async () => {
+    const { client } = fakeClient({ get_settings: () => ({ data: null, error: null }) });
+    await expect(new SettingsSync(client, fakeHost('owner')).load(DEFAULT_CFG)).resolves.toBe(true);
+  });
+});

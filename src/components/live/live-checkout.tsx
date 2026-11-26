@@ -1,0 +1,797 @@
+import { useState } from 'react';
+import Image from 'next/image';
+import type * as React from 'react';
+import type { OpsVals } from '@/view-models/vals';
+import { s } from '@/lib/css';
+import { Pressable } from '@/components/ui/pressable';
+import { ORDER_COPY } from '@/lib/orders/copy';
+import {
+  inputStyle,
+  labelStyle,
+  primaryButton,
+  secondaryButton,
+  smallLabel
+} from '@/components/live/form-styles';
+
+/**
+ * The customer's live checkout (B2, decision D4, the project notes): the one
+ * guarded slot in the ported checkout screen, after the "Your order" card. It replaces "About you",
+ * "Collection", "Payment" and the submit button, because the ported ones ask for an email, an amount
+ * sent and a payment screenshot that a live order neither needs nor takes. Existing tokens only: every
+ * colour, radius and size below is one the ported checkout already uses.
+ */
+const card: React.CSSProperties = {
+  background: 'var(--color-surface)',
+  border: '1px solid var(--color-line)',
+  borderRadius: '18px',
+  padding: '14px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '11px'
+};
+const cardTitle: React.CSSProperties = {
+  fontSize: '13px',
+  fontWeight: 600,
+  color: 'var(--color-ink-soft)'
+};
+const fieldLabel: React.CSSProperties = { fontSize: '13px', fontWeight: '600' };
+const field: React.CSSProperties = {
+  height: '48px',
+  border: '1px solid var(--color-line-strong)',
+  borderRadius: '12px',
+  padding: '0 13px',
+  fontSize: '14px',
+  background: 'var(--color-surface)'
+};
+const errorText: React.CSSProperties = { fontSize: '13px', color: 'var(--color-danger)' };
+const optionCard: React.CSSProperties = {
+  position: 'relative',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '11px',
+  width: '100%',
+  textAlign: 'left',
+  minHeight: '54px',
+  border: '1px solid var(--color-line-strong)',
+  background: 'var(--color-surface)',
+  borderRadius: '12px',
+  padding: '11px 13px',
+  transition: 'background-color .18s ease'
+};
+
+function Radio({ on }: { on: boolean }) {
+  return (
+    <>
+      {on ? (
+        <span
+          style={{
+            position: 'absolute',
+            inset: '-1px',
+            border: '2px solid var(--color-brand)',
+            borderRadius: '12px'
+          }}
+        />
+      ) : null}
+      <span
+        style={{
+          position: 'relative',
+          width: '20px',
+          height: '20px',
+          borderRadius: '999px',
+          border: '2px solid var(--color-line-strong)',
+          display: 'grid',
+          placeItems: 'center',
+          flexShrink: '0'
+        }}
+      >
+        {on ? (
+          <span
+            style={{
+              width: '10px',
+              height: '10px',
+              borderRadius: '999px',
+              background: 'var(--color-brand)'
+            }}
+          />
+        ) : null}
+      </span>
+    </>
+  );
+}
+
+function Text({
+  label,
+  hint,
+  value,
+  onChange,
+  error,
+  readOnly,
+  inputMode,
+  placeholder,
+  id
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  onChange: (value: string) => void;
+  error?: string;
+  readOnly: boolean;
+  inputMode?: 'tel' | 'text';
+  placeholder?: string;
+  id: string;
+}) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+      <span style={fieldLabel}>
+        {label}
+        {hint ? (
+          <span style={{ color: 'var(--color-ink-mute)', fontWeight: '400' }}> {hint}</span>
+        ) : null}
+      </span>
+      <input
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        readOnly={readOnly}
+        inputMode={inputMode}
+        placeholder={placeholder}
+        style={field}
+      />
+      {error ? <span style={errorText}>{error}</span> : null}
+    </label>
+  );
+}
+
+const stepButton: React.CSSProperties = {
+  width: '44px',
+  height: '44px',
+  flexShrink: '0',
+  border: '1px solid var(--color-line-strong)',
+  borderRadius: '10px',
+  background: 'var(--color-surface)',
+  fontSize: '18px',
+  fontWeight: 600,
+  color: 'var(--color-ink)'
+};
+
+/** A quantity with minus and plus, in the checkout's own tokens (a box, or one add-on choice). */
+function Stepper({
+  label,
+  name,
+  qty,
+  max,
+  readOnly,
+  onChange
+}: {
+  /** What is shown. */
+  label: string;
+  /** What a screen reader hears ('More Sticker 2'); the label when not given. */
+  name?: string;
+  qty: number;
+  max: number;
+  readOnly: boolean;
+  onChange: (qty: number) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <span style={{ flex: '1', minWidth: '0', fontSize: '13px', fontWeight: '600' }}>{label}</span>
+      <button
+        type="button"
+        aria-label={'Fewer ' + (name ?? label)}
+        disabled={readOnly || qty <= 0}
+        onClick={() => onChange(qty - 1)}
+        style={{ ...stepButton, opacity: readOnly || qty <= 0 ? 0.5 : 1 }}
+      >
+        −
+      </button>
+      <span
+        style={{ minWidth: '20px', textAlign: 'center', fontSize: '14px', fontWeight: 600 }}
+        aria-live="polite"
+      >
+        {qty}
+      </span>
+      <button
+        type="button"
+        aria-label={'More ' + (name ?? label)}
+        disabled={readOnly || qty >= max}
+        onClick={() => onChange(qty + 1)}
+        style={{ ...stepButton, opacity: readOnly || qty >= max ? 0.5 : 1 }}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+function RecoveryNotice({
+  recovery
+}: {
+  recovery: NonNullable<OpsVals['liveCheckout']>['recovery'];
+}) {
+  if (!recovery?.notice) return null;
+  return (
+    <div role="status" aria-label="Checkout recovery" style={card}>
+      <span style={{ fontSize: '13px', lineHeight: '1.5' }}>{recovery.notice}</span>
+      {recovery.canRetry ? (
+        <button type="button" onClick={recovery.retry} style={secondaryButton}>
+          Retry checkout recovery
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export function LiveCheckout({ v }: { v: OpsVals }) {
+  const live = v.liveCheckout;
+  if (!live) return null;
+  if (live.placed)
+    return (
+      <>
+        <RecoveryNotice recovery={live.recovery} />
+        <Placed placed={live.placed} />
+      </>
+    );
+  const { fields, errors, readOnly } = live;
+  const methods = v.cust.methods ?? [];
+  const canSubmit =
+    (live.recovery?.ready ?? true) &&
+    !live.sending &&
+    (live.frozen || (live.rulesState === 'ready' && !live.extrasUnchecked));
+  const extrasReadOnly = readOnly || live.extrasState !== 'ready';
+  return (
+    <>
+      <RecoveryNotice recovery={live.recovery} />
+      <div style={card}>
+        <span style={cardTitle}>About you</span>
+        <Text
+          id="lc-name"
+          label="Name"
+          value={fields.name}
+          onChange={(x) => live.set('name', x)}
+          error={errors.name}
+          readOnly={readOnly}
+          placeholder="Who is this box for?"
+        />
+        <Text
+          id="lc-ig"
+          label="Instagram handle"
+          value={fields.ig}
+          onChange={(x) => live.set('ig', x)}
+          error={errors.ig}
+          readOnly={readOnly}
+          placeholder="@yourhandle"
+        />
+        <Text
+          id="lc-mobile"
+          label="Contact number"
+          value={fields.mobile}
+          onChange={(x) => live.set('mobile', x)}
+          error={errors.mobile}
+          readOnly={readOnly}
+          inputMode="tel"
+          placeholder="09XX XXX XXXX"
+        />
+      </div>
+      <div style={{ ...card, gap: '9px' }}>
+        <span style={cardTitle}>Pickup</span>
+        {live.rulesState === 'loading' ? (
+          <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)' }}>
+            Loading the pickup days…
+          </span>
+        ) : null}
+        {live.rulesState === 'failed' ? (
+          <div role="status" className="flex flex-col gap-3">
+            <span style={errorText}>{ORDER_COPY.rulesUnavailable}</span>
+            {live.dates.length ? <span>Showing the last read pickup choices.</span> : null}
+            <button
+              type="button"
+              disabled={!live.canRetryRules}
+              onClick={live.retryRules}
+              style={secondaryButton}
+            >
+              Retry pickup days
+            </button>
+          </div>
+        ) : null}
+        {live.rulesState === 'ready' && live.dates.length === 0 ? (
+          <span style={errorText}>{ORDER_COPY.noDates}</span>
+        ) : null}
+        {live.dates.map((d) => (
+          <Pressable
+            key={d.value}
+            as="button"
+            disabled={readOnly}
+            onClick={() => live.set('pickupDate', d.value)}
+            style={optionCard}
+            hoverStyle={{ background: '#FFF8ED' }}
+          >
+            <Radio on={fields.pickupDate === d.value} />
+            <span style={{ position: 'relative', fontSize: '13px', fontWeight: 600 }}>
+              {d.label}
+            </span>
+          </Pressable>
+        ))}
+        {errors.date ? <span style={errorText}>{errors.date}</span> : null}
+        {live.extras?.sameDayNotice ? (
+          <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)', lineHeight: '1.5' }}>
+            {live.extras.sameDayNotice}
+          </span>
+        ) : null}
+        {live.times.length ? (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            <span style={fieldLabel}>Pickup time</span>
+            <select
+              value={fields.pickupTime}
+              onChange={(e) => live.set('pickupTime', e.target.value)}
+              disabled={readOnly}
+              style={field}
+            >
+              <option value="">Choose a time</option>
+              {live.times.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            {errors.time ? <span style={errorText}>{errors.time}</span> : null}
+          </label>
+        ) : null}
+      </div>
+      {live.extrasState === 'loading' ? <p role="status">Checking order options…</p> : null}
+      {live.extrasState === 'failed' ? (
+        <div role="status" className="flex flex-col gap-3 text-label text-ink">
+          <p>{ORDER_COPY.optionsUnavailable}</p>
+          {live.extras ? (
+            <p>Your last choices are kept. Check them again before placing a new order.</p>
+          ) : null}
+          <button
+            type="button"
+            disabled={!live.canRetryExtras}
+            onClick={live.retryExtras}
+            style={secondaryButton}
+          >
+            Retry order options
+          </button>
+        </div>
+      ) : null}
+      {live.extras && live.extras.boxes.length > 0 ? (
+        <div style={{ ...card, gap: '9px' }}>
+          <span style={cardTitle}>{ORDER_COPY.extras.boxesTitle}</span>
+          <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)' }}>
+            {ORDER_COPY.extras.boxesHelp}
+          </span>
+          {live.extras.boxes.map((b) => (
+            <Stepper
+              key={b.size}
+              label={b.label}
+              qty={b.qty}
+              max={b.max}
+              readOnly={extrasReadOnly}
+              onChange={b.setQty}
+            />
+          ))}
+        </div>
+      ) : null}
+      {live.extras && live.extras.addOns.length > 0 ? (
+        <div style={{ ...card, gap: '11px' }}>
+          <span style={cardTitle}>{ORDER_COPY.extras.addOnsTitle}</span>
+          {live.extras.addOns.map((a) => (
+            <div key={a.id} style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+              {a.rows.length > 1 ? (
+                <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)' }}>
+                  {a.name} · {a.priceText}
+                </span>
+              ) : null}
+              {a.rows.map((row) => (
+                <div key={row.key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {row.photo ? (
+                    <Image
+                      src={row.photo}
+                      alt={row.label}
+                      width={80}
+                      height={80}
+                      unoptimized
+                      style={{
+                        width: '80px',
+                        height: '80px',
+                        borderRadius: '10px',
+                        objectFit: 'cover'
+                      }}
+                    />
+                  ) : null}
+                  <Stepper
+                    label={a.rows.length > 1 ? row.label : row.label + ' · ' + a.priceText}
+                    name={row.label}
+                    qty={row.qty}
+                    max={row.max}
+                    readOnly={extrasReadOnly}
+                    onChange={row.setQty}
+                  />
+                  {a.textLabel !== null && row.qty > 0 ? (
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                      <span style={fieldLabel}>{a.textLabel}</span>
+                      <input
+                        value={row.text}
+                        onChange={(e) => row.setText(e.target.value)}
+                        readOnly={extrasReadOnly}
+                        maxLength={a.textMax}
+                        style={field}
+                      />
+                    </label>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {errors.extras ? <span style={errorText}>{errors.extras}</span> : null}
+      {live.totalNote ? (
+        <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)', lineHeight: '1.5' }}>
+          {live.totalNote}
+        </span>
+      ) : null}
+      <div style={{ ...card, gap: '9px' }}>
+        <span style={cardTitle}>Payment</span>
+        {v.livePaymentRead?.state === 'loading' ? (
+          <p role="status">Loading payment methods…</p>
+        ) : null}
+        {v.livePaymentRead?.state === 'failed' ? (
+          <div role="status" className="flex flex-col gap-3 text-label text-ink">
+            <p>Payment methods could not be read.</p>
+            <button
+              type="button"
+              disabled={!v.livePaymentRead.canRetry}
+              onClick={v.livePaymentRead.retry}
+              style={secondaryButton}
+            >
+              Retry payment methods
+            </button>
+          </div>
+        ) : null}
+        <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)', lineHeight: '1.5' }}>
+          {ORDER_COPY.payHelp}
+        </span>
+        {methods.length === 0 && (!v.livePaymentRead || v.livePaymentRead.state === 'ready') ? (
+          <span style={errorText}>{ORDER_COPY.noMethods}</span>
+        ) : null}
+        {methods.map((m) => (
+          <Pressable
+            key={String(m.label)}
+            as="button"
+            disabled={readOnly}
+            onClick={m.pick}
+            style={optionCard}
+            hoverStyle={{ background: '#FFF8ED' }}
+          >
+            <Radio on={!!m.on} />
+            <span
+              style={{
+                position: 'relative',
+                flex: '1',
+                minWidth: '0',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1px'
+              }}
+            >
+              <span style={{ fontSize: '13px', fontWeight: 600 }}>{m.label}</span>
+              <span
+                style={{
+                  fontSize: '13px',
+                  color: 'var(--color-ink-soft)'
+                }}
+              >
+                {[m.num, m.holder].filter(Boolean).join(' · ')}
+              </span>
+            </span>
+          </Pressable>
+        ))}
+        {errors.pay ? <span style={errorText}>{errors.pay}</span> : null}
+        {v.cust.qr ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '9px',
+              background: '#FFFBF3',
+              border: '1px solid var(--color-line)',
+              borderRadius: '14px',
+              padding: '14px'
+            }}
+          >
+            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-ink-soft)' }}>
+              {v.cust.qrTitle}
+            </span>
+            <span style={s(v.cust.qr)} />
+            <span
+              style={{
+                maxWidth: '34ch',
+                fontSize: '13px',
+                color: '#8A7062',
+                textAlign: 'center',
+                lineHeight: '1.5',
+                textWrap: 'pretty'
+              }}
+            >
+              {ORDER_COPY.qrNote}
+            </span>
+          </div>
+        ) : null}
+      </div>
+      {errors.items ? <span style={errorText}>{errors.items}</span> : null}
+      {live.banner ? (
+        <div
+          role="alert"
+          style={{
+            ...card,
+            gap: '9px',
+            background: live.banner.tone === 'error' ? '#FFF6F4' : '#FFFBF3',
+            border:
+              '1px solid ' + (live.banner.tone === 'error' ? '#F1C8C2' : 'var(--color-line-strong)')
+          }}
+        >
+          <span
+            style={{
+              fontSize: '13px',
+              lineHeight: '1.5',
+              color: live.banner.tone === 'error' ? 'var(--color-danger)' : 'var(--color-ink)'
+            }}
+          >
+            {live.banner.text}
+          </span>
+          {live.banner.canWaitlist ? (
+            <button type="button" onClick={live.openWaitlist} style={secondaryButton}>
+              Join the waiting list
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      <Pressable
+        as="button"
+        disabled={!canSubmit}
+        onClick={live.submit}
+        style={{
+          minHeight: '56px',
+          border: '0',
+          borderRadius: '14px',
+          background: 'var(--color-brand)',
+          color: 'var(--color-surface)',
+          fontSize: '16px',
+          fontWeight: 600,
+          boxShadow: '0 4px 16px -5px rgba(231,95,35,.6)',
+          opacity: canSubmit ? 1 : 0.6,
+          transition: 'transform .16s cubic-bezier(.2,.8,.2,1), background-color .2s ease'
+        }}
+        hoverStyle={{ background: 'var(--color-brand-deep)' }}
+        activeStyle={{ transform: 'scale(.985)' }}
+      >
+        {live.sending ? 'Sending…' : live.frozen ? 'Try again' : 'Place order'}
+      </Pressable>
+      {live.frozen ? (
+        <button
+          type="button"
+          onClick={live.changeOrder}
+          style={{ ...secondaryButton, alignSelf: 'center' }}
+        >
+          Change the order
+        </button>
+      ) : null}
+      {live.holdNote ? (
+        <span
+          style={{
+            maxWidth: '40ch',
+            alignSelf: 'center',
+            fontSize: '13px',
+            color: 'var(--color-ink-mute)',
+            textAlign: 'center',
+            lineHeight: '1.5',
+            textWrap: 'pretty'
+          }}
+        >
+          {live.holdNote}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+function Placed({
+  placed
+}: {
+  placed: NonNullable<NonNullable<OpsVals['liveCheckout']>['placed']>;
+}) {
+  return (
+    <div style={{ ...card, gap: '12px' }}>
+      <span style={{ fontSize: '24px', fontWeight: 700, letterSpacing: '-0.015em' }}>
+        {ORDER_COPY.placedTitle}
+      </span>
+      <span
+        style={{
+          alignSelf: 'flex-start',
+          fontSize: '13px',
+          fontWeight: 600,
+          background: 'var(--color-surface)',
+          border: '1px solid var(--color-line)',
+          borderRadius: '999px',
+          padding: '7px 15px'
+        }}
+      >
+        Order no. {placed.orderNo}
+      </span>
+      <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)', lineHeight: '1.5' }}>
+        {ORDER_COPY.placedBody}
+      </span>
+      <span style={{ fontSize: '13px', fontWeight: '600' }}>
+        {placed.pickupText ? ORDER_COPY.pickupLine(placed.pickupText) + ' · ' : ''}Total{' '}
+        {placed.totalText}
+      </span>
+      {placed.extraLines.length ? (
+        <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)', lineHeight: '1.5' }}>
+          {ORDER_COPY.extras.placedLines}: {placed.extraLines.join(' · ')}
+        </span>
+      ) : null}
+      <a
+        href={placed.statusUrl}
+        style={{
+          fontSize: '13px',
+          color: 'var(--color-brand)',
+          overflowWrap: 'anywhere',
+          lineHeight: '1.5'
+        }}
+      >
+        {placed.statusUrl}
+      </a>
+      <button type="button" onClick={placed.copyLink} style={secondaryButton}>
+        Copy the link
+      </button>
+      <button type="button" onClick={placed.seeOrder} style={primaryButton}>
+        See my order
+      </button>
+      <button type="button" onClick={placed.orderAgain} style={secondaryButton}>
+        Order again
+      </button>
+    </div>
+  );
+}
+
+/** "Find my order" as a sheet (live customer pages): order number and the phone it was placed with. */
+export function LiveLookup({ v }: { v: OpsVals }) {
+  const live = v.liveLookup;
+  const [orderNo, setOrderNo] = useState('');
+  const [mobile, setMobile] = useState('');
+  if (!live) return null;
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        live.run(orderNo, mobile);
+      }}
+      style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}
+    >
+      <span style={{ fontSize: '13px', color: 'var(--color-ink-soft)', lineHeight: '1.5' }}>
+        {ORDER_COPY.lookupIntro}
+      </span>
+      <label style={labelStyle}>
+        <span style={smallLabel}>Order number</span>
+        <input
+          value={orderNo}
+          onChange={(e) => setOrderNo(e.target.value)}
+          placeholder="Order number"
+          style={inputStyle}
+        />
+      </label>
+      <label style={labelStyle}>
+        <span style={smallLabel}>Mobile number</span>
+        <input
+          value={mobile}
+          onChange={(e) => setMobile(e.target.value)}
+          inputMode="tel"
+          placeholder="09XX XXX XXXX"
+          style={inputStyle}
+        />
+      </label>
+      <button type="submit" disabled={live.state === 'busy'} style={primaryButton}>
+        {live.state === 'busy' ? 'Looking…' : 'Find it'}
+      </button>
+      {live.state === 'missed' ? (
+        <span style={{ fontSize: '13px', color: 'var(--color-danger)', lineHeight: '1.45' }}>
+          {ORDER_COPY.lookupMiss}
+        </span>
+      ) : null}
+      {live.state === 'error' ? (
+        <span style={{ fontSize: '13px', color: 'var(--color-danger)', lineHeight: '1.45' }}>
+          {ORDER_COPY.lookupError}
+        </span>
+      ) : null}
+    </form>
+  );
+}
+
+/** The waiting list as a sheet: name, Instagram, mobile and the date wanted. */
+export function LiveWaitlistForm({ v }: { v: OpsVals }) {
+  const live = v.liveWaitlist;
+  const [name, setName] = useState('');
+  const [ig, setIg] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [wantedDate, setWantedDate] = useState('');
+  if (!live) return null;
+  if (live.state === 'done') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <span style={{ fontSize: '13px', lineHeight: '1.5' }}>{live.message}</span>
+        <button type="button" onClick={live.close} style={primaryButton}>
+          Done
+        </button>
+      </div>
+    );
+  }
+  const frozen = live.state === 'unknown';
+  return (
+    <form
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault();
+        live.join({ name, ig, mobile, wantedDate });
+      }}
+      style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}
+    >
+      <label style={labelStyle}>
+        <span style={smallLabel}>Name</span>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          readOnly={frozen}
+          style={inputStyle}
+        />
+        {live.errors.name ? <span style={errorText}>{live.errors.name}</span> : null}
+      </label>
+      <label style={labelStyle}>
+        <span style={smallLabel}>Instagram handle</span>
+        <input
+          value={ig}
+          onChange={(e) => setIg(e.target.value)}
+          readOnly={frozen}
+          required
+          placeholder="@yourhandle"
+          style={inputStyle}
+        />
+        {live.errors.ig ? <span style={errorText}>{live.errors.ig}</span> : null}
+      </label>
+      <label style={labelStyle}>
+        <span style={smallLabel}>Mobile number</span>
+        <input
+          value={mobile}
+          onChange={(e) => setMobile(e.target.value)}
+          readOnly={frozen}
+          inputMode="tel"
+          placeholder="09XX XXX XXXX"
+          style={inputStyle}
+        />
+        {live.errors.mobile ? <span style={errorText}>{live.errors.mobile}</span> : null}
+      </label>
+      <label style={labelStyle}>
+        <span style={smallLabel}>Date you want cookies</span>
+        <input
+          type="date"
+          value={wantedDate}
+          min={live.min}
+          max={live.max}
+          onChange={(e) => setWantedDate(e.target.value)}
+          readOnly={frozen}
+          style={inputStyle}
+        />
+        {live.errors.date ? <span style={errorText}>{live.errors.date}</span> : null}
+      </label>
+      <button type="submit" disabled={live.state === 'sending'} style={primaryButton}>
+        {live.state === 'sending' ? 'Sending…' : frozen ? 'Try again' : 'Join the waiting list'}
+      </button>
+      {live.message ? (
+        <span style={{ fontSize: '13px', color: 'var(--color-danger)', lineHeight: '1.45' }}>
+          {live.message}
+        </span>
+      ) : null}
+    </form>
+  );
+}

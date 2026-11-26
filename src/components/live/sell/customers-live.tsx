@@ -1,0 +1,366 @@
+'use client';
+
+import { useId, useState, useSyncExternalStore } from 'react';
+import type { OpsVals } from '@/view-models/vals';
+import type { CustomerRow, LiveCustomers, RemoveOutcome } from '@/store/customer-desk';
+import { Banner } from '@/components/ui/banner';
+import { isLiveMode } from '@/lib/config/app-mode';
+import { ordersRead } from '@/lib/orders/orders-read-state';
+import { STAFF_COPY } from '@/lib/orders/staff-copy';
+import { readAtText } from '@/lib/time/read-at-text';
+import { Button } from '@/components/ui/button';
+import {
+  FooterActions,
+  PageTitle,
+  Panel,
+  SectionHeading,
+  TaskRow
+} from '@/components/ui/owner-kit';
+import { FactRow, OpenRow } from '@/components/ui/owner-patterns';
+import { cx } from '@/components/ui/cx';
+import { GlassCard, glassStyles } from '@/components/ui/glass';
+import { SubPage, stockGlass } from '@/components/live/stock/stock-glass';
+import { SellTabs } from './sell-shared';
+import sg from './sell-glass.module.css';
+
+// get_staff_orders (migration 096): open orders plus the last 60 days, capped at 500
+// across the whole order feed; this is not a lifetime customer history. OD-12 copy.
+const CUSTOMER_FEED_SCOPE =
+  'Open orders and orders placed in the last 60 days, up to 500 orders across all customers.';
+
+function saveFile(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/** A message to copy into the usual app. Nothing is sent from here. */
+function PrepareMessage({ customer, back }: { customer: CustomerRow; back: () => void }) {
+  const fieldId = useId();
+  const [text, setText] = useState('');
+  const [note, setNote] = useState<string | null>(null);
+  const copy = async () => {
+    if (!text.trim()) return setNote('Write the message first.');
+    try {
+      await navigator.clipboard.writeText(text);
+      setNote('Message copied.');
+    } catch {
+      setNote('This browser would not copy it. Select the words and copy them yourself.');
+    }
+  };
+  return (
+    <SubPage>
+      <PageTitle title="Prepare message" subtitle={customer.name} />
+      <Panel>
+        <label htmlFor={fieldId} className="flex flex-col gap-1.5">
+          <span className="text-label font-semibold text-ink-soft">Message</span>
+          <textarea
+            id={fieldId}
+            rows={5}
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value);
+              setNote(null);
+            }}
+            className="w-full rounded-control border border-line-strong bg-surface p-3 text-body text-ink focus-visible:outline-2 focus-visible:outline-brand sm:text-label"
+          />
+        </label>
+        <p role="status" className="mt-2 text-caption text-ink-mute">
+          {note ?? 'Copy into your usual messaging app after checking the details.'}
+        </p>
+        <div className="mt-4">
+          <FooterActions
+            back={
+              <Button variant="secondary" onClick={back}>
+                Back to customer
+              </Button>
+            }
+            forward={
+              <Button variant="primary" onClick={() => void copy()}>
+                Copy message
+              </Button>
+            }
+          />
+        </div>
+      </Panel>
+    </SubPage>
+  );
+}
+
+const REMOVE_WORDS: Record<Exclude<RemoveOutcome, 'removed'>, string> = {
+  failed: 'The details were not removed. Check the signal and try again.',
+  nothing: 'No order matched this number, so nothing was changed.',
+  partial:
+    'Some orders still show this number, because they were saved in another form. Nothing more can be removed from here.',
+  unconfirmed:
+    'The details were removed, but your orders could not be read back. Check this customer again when you have signal.'
+};
+
+/** Removing someone's details cannot be undone, so it says what happens and asks first. */
+function RemoveContact({
+  customer,
+  customers,
+  back
+}: {
+  customer: CustomerRow;
+  customers: LiveCustomers;
+  back: () => void;
+}) {
+  const [sure, setSure] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const remove = async () => {
+    setSaving(true);
+    setProblem(null);
+    const answer = await customers.removeContact(customer);
+    setSaving(false);
+    if (answer === 'removed') back();
+    else setProblem(REMOVE_WORDS[answer]);
+  };
+  return (
+    <SubPage>
+      <PageTitle title="Remove contact details" subtitle={customer.name} />
+      {problem ? (
+        <div className="mb-3">
+          <Banner tone="warn" title={problem} />
+        </div>
+      ) : null}
+      <Panel>
+        <p className="text-caption text-ink-soft">
+          This removes the saved name, number, Instagram handle, notes and waitlist entries for{' '}
+          {customer.mobile}. Orders still waiting for payment review are deleted. Sales records
+          stay, without their contact details. Payment proofs and references are not removed. It
+          cannot be undone.
+        </p>
+        <label className="mt-3 flex min-h-11 items-center gap-2 text-label text-ink">
+          <input
+            type="checkbox"
+            checked={sure}
+            onChange={(event) => setSure(event.target.checked)}
+            className="size-6 accent-brand"
+          />
+          Remove this customer&apos;s saved contact details
+        </label>
+        <div className="mt-4">
+          <FooterActions
+            back={
+              <Button variant="secondary" onClick={back} disabled={saving}>
+                Keep details
+              </Button>
+            }
+            forward={
+              <Button
+                variant="primary"
+                onClick={() => void remove()}
+                disabled={!sure || !customers.online}
+                reason={customers.online ? 'Tick the box first.' : 'Removing details needs signal.'}
+                busy={saving}
+                busyLabel="Removing…"
+              >
+                Remove contact details
+              </Button>
+            }
+          />
+        </div>
+      </Panel>
+    </SubPage>
+  );
+}
+
+type View = { key: string; page: 'detail' | 'message' | 'remove' } | null;
+
+function CustomerDetail({
+  customer,
+  customers,
+  page,
+  go,
+  back
+}: {
+  customer: CustomerRow;
+  customers: LiveCustomers;
+  page: NonNullable<View>['page'];
+  go: (page: NonNullable<View>['page']) => void;
+  back: () => void;
+}) {
+  if (page === 'message') return <PrepareMessage customer={customer} back={() => go('detail')} />;
+  if (page === 'remove')
+    return <RemoveContact customer={customer} customers={customers} back={() => go('detail')} />;
+  return (
+    <SubPage>
+      <PageTitle title={customer.name} subtitle={customer.orderCountText} />
+      <Panel>
+        <FactRow label="Mobile">{customer.mobile || 'Not given'}</FactRow>
+        {customer.contactText ? <FactRow label="Other">{customer.contactText}</FactRow> : null}
+        <FactRow label="Orders">{customer.orderCountText}</FactRow>
+      </Panel>
+      <SectionHeading>Orders in this list</SectionHeading>
+      <Panel>
+        <p className="mb-2 text-caption text-ink-mute">{CUSTOMER_FEED_SCOPE}</p>
+        {customer.orders.map((order) => (
+          <TaskRow
+            key={order.id}
+            title={order.id}
+            detail={`${order.whenText} · ${order.statusText} · ${order.cookiesText}`}
+            action={
+              <Button variant="secondary" size="sm" onClick={order.open}>
+                View order<span className="sr-only"> {order.id}</span>
+              </Button>
+            }
+          />
+        ))}
+      </Panel>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button variant="secondary" onClick={() => go('message')}>
+          Prepare message
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() =>
+            saveFile(`customer-${customer.orders[0]?.id ?? 'record'}.csv`, customer.recordCsv)
+          }
+        >
+          Export listed orders
+        </Button>
+        {customer.mobile ? (
+          <Button variant="secondary" onClick={() => go('remove')}>
+            Remove contact details
+          </Button>
+        ) : null}
+        <Button variant="ghost" onClick={back}>
+          Back to customers
+        </Button>
+      </div>
+    </SubPage>
+  );
+}
+
+/**
+ * Customers/Waitlist (client v4): everyone who has ordered, and who is waiting for the next drop.
+ * The waitlist action is the engine's own, as on the sheet this page replaces.
+ */
+export function CustomersLive({ v }: { v: OpsVals }) {
+  const [view, setView] = useState<View>(null);
+  const customers = v.liveCustomers;
+  const waitlist = v.waitlist ?? [];
+  // Customers uses the same StaffOrderSync feed as Orders and Payments.
+  const read = useSyncExternalStore(ordersRead.subscribe, ordersRead.get, ordersRead.getServer);
+  const notRead =
+    !customers?.loaded ||
+    read.phase === 'loading' ||
+    (read.phase === 'idle' && isLiveMode() && !!v.ownerView);
+  const failedFirst = read.phase === 'failed' && !read.everRead;
+  const stale = read.phase === 'failed' && read.everRead && read.readAt !== null;
+  const partial = stale || read.dropped > 0;
+  const retry = read.retry ? { label: 'Try again', onPress: read.retry } : undefined;
+  const notice = partial ? (
+    <div className={sg.flow}>
+      {stale ? (
+        <Banner
+          tone="warn"
+          title={STAFF_COPY.ordersStale(readAtText(read.readAt as number))}
+          action={retry}
+        />
+      ) : null}
+      {read.dropped > 0 ? (
+        <Banner tone="warn" title={STAFF_COPY.ordersDropped(read.dropped)} />
+      ) : null}
+    </div>
+  ) : null;
+  const selected = view && customers?.rows.find((row) => row.key === view.key);
+  // A customer whose details were removed no longer has this key: the list is the way back.
+  if (view && selected && customers && !notRead && !failedFirst) {
+    const detail = (
+      <CustomerDetail
+        customer={selected}
+        customers={customers}
+        page={view.page}
+        go={(page) => setView({ key: view.key, page })}
+        back={() => setView(null)}
+      />
+    );
+    return (
+      <>
+        {notice}
+        {detail}
+      </>
+    );
+  }
+  return (
+    <div className={sg.page}>
+      <div className={sg.head}>
+        <PageTitle
+          onGround
+          title="Customers/Waitlist"
+          subtitle="Customers in your order list, and who is waiting for the next drop."
+        />
+        <SellTabs v={v} active="customers" onGround />
+      </div>
+      <div className={sg.group}>
+        <GlassCard title="Customers">
+          {failedFirst ? (
+            <Banner tone="warn" title={STAFF_COPY.ordersReadFailed} action={retry} />
+          ) : notRead ? (
+            <p role="status" className={sg.none}>
+              {STAFF_COPY.ordersNotRead}
+            </p>
+          ) : null}
+          {!failedFirst && !notRead ? notice : null}
+          {!failedFirst && !notRead ? <p className={sg.none}>{CUSTOMER_FEED_SCOPE}</p> : null}
+          {!failedFirst && !notRead && customers ? (
+            customers.rows.length === 0 ? (
+              <p className={sg.none}>
+                {partial
+                  ? 'No customers could be shown from this incomplete read.'
+                  : 'No customers in the orders read.'}
+              </p>
+            ) : (
+              <div className={cx(glassStyles.glassRows, stockGlass.taskRows)}>
+                {customers.rows.map((row) => (
+                  <OpenRow
+                    key={row.key}
+                    title={row.name}
+                    detail={`${row.orderCountText} · ${row.lastOrderText}`}
+                    label="Open customer"
+                    onOpen={() => setView({ key: row.key, page: 'detail' })}
+                  />
+                ))}
+              </div>
+            )
+          ) : null}
+        </GlassCard>
+        <GlassCard title="Waiting for the next drop">
+          {waitlist.length === 0 ? (
+            <p className={sg.none}>Nobody is waiting right now.</p>
+          ) : (
+            <ul className={sg.list}>
+              {waitlist.map((person, i) => (
+                <li key={i} className={sg.item}>
+                  <span className={sg.itemBody}>
+                    <span className="[overflow-wrap:anywhere] text-label font-semibold text-ink">
+                      {person.name}
+                    </span>
+                    {person.want || person.when ? (
+                      <span className="text-caption text-ink-mute">
+                        {[person.want, person.when].filter(Boolean).join(' · ')}
+                      </span>
+                    ) : null}
+                  </span>
+                  <Button
+                    variant={person.contacted ? 'ghost' : 'secondary'}
+                    size="sm"
+                    onClick={person.go}
+                  >
+                    {person.contacted ? 'Told · tap to clear' : 'Tell them'}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </GlassCard>
+      </div>
+    </div>
+  );
+}

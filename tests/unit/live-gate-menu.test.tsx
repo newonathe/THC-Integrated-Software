@@ -1,0 +1,482 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ProfileCheck } from '@/lib/auth/live-gate';
+import { act, render } from '@testing-library/react';
+import type { ScreenKey } from '@/lib/screens';
+
+/**
+ * MP-09 c1b: which flavour list the live gate loads. Customer pages read the published menu
+ * (`shop_products`) whether or not someone is signed in; the full staff list loads only on a
+ * staff screen, so a signed-in owner on /shop sees what customers see.
+ */
+const { FakeRuntime } = vi.hoisted(() => ({
+  FakeRuntime: class {
+    state = { screen: 'shop' as ScreenKey, role: 'owner' as 'owner' | 'helper', cfg: {} };
+    setRole = vi.fn((role: 'owner' | 'helper') => {
+      this.state.role = role;
+      this.state.screen = 'today'; // the real `setRole` goes to the role's home screen
+    });
+    setState = vi.fn((_patch: unknown, callback?: () => void) => callback?.());
+    // S3: a verified helper is held to the Bazaar screen, which the gate does with `go`.
+    go = vi.fn((screen: ScreenKey) => {
+      this.state.screen = screen;
+    });
+    loadSettings = vi.fn();
+    saveStallCopy = vi.fn();
+    loadFlavours = vi.fn();
+    loadShopMenu = vi.fn();
+    loadShopPayment = vi.fn();
+    loadShopIdentity = vi.fn();
+    staffNameRole: 'owner' | 'helper' | null = null;
+    bindStaffIdentity = vi.fn(() => {
+      this.staffNameRole = null;
+    });
+    loadStaffName = vi.fn(() => {
+      this.staffNameRole = this.state.role;
+    });
+    loadShopOrders = vi.fn();
+    loadOrders = vi.fn();
+    reloadOrders = vi.fn();
+    loadScheduledEvents = vi.fn();
+    loadStockCatalogue = vi.fn();
+    loadProduction = vi.fn();
+    loadBooks = vi.fn();
+    loadOperationsHealth = vi.fn();
+    loadRecipes = vi.fn();
+    loadShopStatus = vi.fn();
+    reloadShopStatus = vi.fn();
+    setGateAccess = vi.fn();
+    setProductionIdentity = vi.fn();
+  }
+}));
+vi.mock('@/store/ops-runtime', () => ({ OpsRuntime: FakeRuntime }));
+let engine = new FakeRuntime();
+vi.mock('@/store/use-ops', () => ({
+  useOpsEngine: () => engine,
+  useOpsVals: () => ({})
+}));
+vi.mock('@/lib/config/app-mode', () => ({ isLiveMode: () => true }));
+let configured = true;
+vi.mock('@/lib/supabase/config', () => ({ hasSupabaseConfig: () => configured }));
+vi.mock('@/lib/auth/live-gate', () => ({
+  checkStaffProfile: vi.fn(async () => ({ status: 'ok', role })),
+  signOutAndRedirect: vi.fn()
+}));
+vi.mock('@/lib/auth/idle-signout', () => ({
+  ACTIVITY_EVENTS: [],
+  idleMinutesFor: () => 60,
+  startIdleSignOut: () => () => undefined
+}));
+let role: 'owner' | 'helper' = 'owner';
+type AuthSession = { user: { id: string } } | null;
+let authEvent: (event: string, session?: AuthSession) => void = () => {};
+const client = {
+  auth: {
+    onAuthStateChange: (cb: (event: string, session?: AuthSession) => void) => {
+      authEvent = cb;
+      return { data: { subscription: { unsubscribe: vi.fn() } } };
+    }
+  }
+};
+vi.mock('@/lib/supabase/client', () => ({ createClient: () => client }));
+
+import { LiveGate } from '@/components/app/live-gate';
+import { checkStaffProfile } from '@/lib/auth/live-gate';
+
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+describe('LiveGate: the flavour list each page loads', () => {
+  beforeEach(() => {
+    engine = new FakeRuntime();
+    vi.mocked(checkStaffProfile).mockImplementation(async () => ({ status: 'ok', role }));
+    configured = true;
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://configured.example');
+  });
+
+  it('rebinds and re-reads names after a same-role account changes', async () => {
+    engine.state.screen = 'today';
+    vi.mocked(checkStaffProfile).mockResolvedValue({
+      status: 'ok',
+      role: 'owner',
+      userId: 'first-owner'
+    });
+    render(
+      <LiveGate initialScreen="today">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    expect(engine.loadStaffName).toHaveBeenCalledTimes(1);
+    vi.mocked(checkStaffProfile).mockResolvedValue({
+      status: 'ok',
+      role: 'owner',
+      userId: 'next-owner'
+    });
+    await act(async () => {
+      authEvent('SIGNED_IN', { user: { id: 'next-owner' } });
+      await settle();
+    });
+    expect(engine.bindStaffIdentity).toHaveBeenLastCalledWith({
+      userId: 'next-owner',
+      business: 'https://configured.example'
+    });
+    expect(engine.loadStaffName).toHaveBeenCalledTimes(2);
+  });
+
+  it('binds names to the full configured backend path', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://configured.example/backend-a');
+    vi.mocked(checkStaffProfile).mockResolvedValue({
+      status: 'ok',
+      role: 'owner',
+      userId: 'first-owner'
+    });
+    render(
+      <LiveGate initialScreen="today">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    expect(engine.bindStaffIdentity).toHaveBeenLastCalledWith({
+      userId: 'first-owner',
+      business: 'https://configured.example/backend-a'
+    });
+  });
+
+  it('reads the published menu on a customer page, and never the staff list', async () => {
+    render(
+      <LiveGate initialScreen="shop">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    expect(engine.loadShopMenu).toHaveBeenCalledExactlyOnceWith(client);
+    // MP-09 c2: the payment methods and shop texts load on every live page.
+    expect(engine.loadShopPayment).toHaveBeenCalledExactlyOnceWith(client);
+    // B2: the pickup rules, checkout, lookup and waiting list load on every live page too.
+    expect(engine.loadShopOrders).toHaveBeenCalledExactlyOnceWith(
+      client,
+      'https://configured.example'
+    );
+    // A signed-in owner on /shop: the token refresh verifies her, but the shop stays public.
+    // `setRole` navigates Home, so it must never run on a customer screen: the role is only held.
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.setRole).not.toHaveBeenCalled();
+    expect(engine.setState).toHaveBeenCalledWith({ role: 'owner' });
+    expect(engine.state.screen).toBe('shop');
+    expect(engine.loadFlavours).not.toHaveBeenCalled();
+  });
+
+  it('keeps a verified helper on a customer page too, holding the role', async () => {
+    role = 'helper';
+    render(
+      <LiveGate initialScreen="shop">
+        <div />
+      </LiveGate>
+    );
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    role = 'owner';
+    expect(engine.setRole).not.toHaveBeenCalled();
+    expect(engine.setState).toHaveBeenCalledWith({ role: 'helper' });
+    expect(engine.state.screen).toBe('shop');
+  });
+
+  it('loads the staff list once on a staff page, and no shop menu', async () => {
+    engine.state.screen = 'today';
+    render(
+      <LiveGate initialScreen="today">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.loadFlavours).toHaveBeenCalledExactlyOnceWith(client);
+    expect(engine.loadSettings).toHaveBeenCalledTimes(1);
+    expect(engine.loadOperationsHealth).toHaveBeenCalledWith(client);
+    expect(engine.loadShopMenu).not.toHaveBeenCalled();
+    expect(engine.loadShopPayment).toHaveBeenCalledExactlyOnceWith(client);
+    expect(engine.loadShopOrders).toHaveBeenCalledExactlyOnceWith(
+      client,
+      'https://configured.example'
+    );
+  });
+
+  it('keeps an active count through a same-role token refresh, but applies a changed role', async () => {
+    engine.state.screen = 'inventory';
+    render(
+      <LiveGate initialScreen="inventory">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    expect(engine.setRole).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.setRole).toHaveBeenCalledTimes(1);
+    role = 'helper';
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.setRole).toHaveBeenCalledTimes(2);
+    expect(engine.state.role).toBe('helper');
+    role = 'owner';
+  });
+
+  it('with no Supabase configured, a customer page gets an empty menu', async () => {
+    configured = false;
+    render(
+      <LiveGate initialScreen="shop">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    expect(engine.loadShopMenu).toHaveBeenCalledExactlyOnceWith(null);
+    expect(engine.loadShopPayment).toHaveBeenCalledExactlyOnceWith(null);
+    // Nothing to order through: the runtime never builds an order flow, and says so on the checkout.
+    expect(engine.loadShopOrders).not.toHaveBeenCalled();
+  });
+});
+
+describe('LiveGate: verified identity for unfinished production', () => {
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const other = '22222222-2222-4222-8222-222222222222';
+  beforeEach(() => {
+    engine = new FakeRuntime();
+    configured = true;
+    role = 'owner';
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://happy-cookie.supabase.co');
+    vi.mocked(checkStaffProfile).mockResolvedValue({ status: 'ok', role: 'owner', userId: owner });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.mocked(checkStaffProfile).mockImplementation(async () => ({ status: 'ok', role }));
+  });
+  it('binds only the server-verified owner and configured backend, never an owner role alone', async () => {
+    engine.state.screen = 'bake';
+    render(
+      <LiveGate initialScreen="bake">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    expect(engine.setProductionIdentity).toHaveBeenLastCalledWith({
+      userId: owner,
+      business: 'https://happy-cookie.supabase.co'
+    });
+    vi.mocked(checkStaffProfile).mockResolvedValue({ status: 'ok', role: 'owner' });
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.setProductionIdentity).toHaveBeenLastCalledWith(null);
+  });
+  it('closes old work immediately and ignores an old profile reply after the account changes', async () => {
+    engine.state.screen = 'bake';
+    render(
+      <LiveGate initialScreen="bake">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    let reply!: (value: ProfileCheck) => void;
+    vi.mocked(checkStaffProfile).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          reply = resolve;
+        })
+    );
+    act(() => authEvent('TOKEN_REFRESHED'));
+    vi.mocked(checkStaffProfile).mockResolvedValue({ status: 'ok', role: 'owner', userId: other });
+    act(() => authEvent('SIGNED_IN', { user: { id: other } }));
+    expect(engine.setProductionIdentity).toHaveBeenLastCalledWith(null);
+    await act(settle);
+    expect(engine.setProductionIdentity).toHaveBeenLastCalledWith({
+      userId: other,
+      business: 'https://happy-cookie.supabase.co'
+    });
+    const count = engine.setProductionIdentity.mock.calls.length;
+    await act(async () => {
+      reply({ status: 'ok', role: 'owner', userId: owner });
+      await settle();
+    });
+    expect(engine.setProductionIdentity.mock.calls).toHaveLength(count);
+  });
+  it('rebinds production after owner access returns without reloading settings or the catalogue', async () => {
+    engine.state.screen = 'bake';
+    render(
+      <LiveGate initialScreen="bake">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    expect(engine.loadRecipes).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.loadProduction).toHaveBeenCalledTimes(1);
+    vi.mocked(checkStaffProfile).mockResolvedValue({ status: 'ok', role: 'helper', userId: owner });
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.setProductionIdentity).toHaveBeenLastCalledWith(null);
+    vi.mocked(checkStaffProfile).mockResolvedValue({ status: 'ok', role: 'owner', userId: owner });
+    await act(async () => {
+      authEvent('TOKEN_REFRESHED');
+      await settle();
+    });
+    expect(engine.loadProduction).toHaveBeenCalledTimes(2);
+    expect(engine.loadRecipes).toHaveBeenLastCalledWith(client, undefined, undefined, {
+      userId: owner,
+      business: 'https://happy-cookie.supabase.co'
+    });
+    expect(engine.loadRecipes).toHaveBeenCalledTimes(2);
+    vi.mocked(checkStaffProfile).mockResolvedValue({ status: 'ok', role: 'owner', userId: other });
+    await act(async () => {
+      authEvent('SIGNED_IN', { user: { id: other } });
+      await settle();
+    });
+    expect(engine.loadProduction).toHaveBeenCalledTimes(3);
+    expect(engine.loadRecipes).toHaveBeenLastCalledWith(client, undefined, undefined, {
+      userId: other,
+      business: 'https://happy-cookie.supabase.co'
+    });
+    expect(engine.loadSettings).toHaveBeenCalledTimes(1);
+    expect(engine.loadFlavours).toHaveBeenCalledTimes(1);
+  });
+  it('does not turn anonymous customer sign-in into a staff check', async () => {
+    render(
+      <LiveGate initialScreen="shop">
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+    vi.mocked(checkStaffProfile).mockClear();
+    await act(async () => {
+      authEvent('SIGNED_IN', { user: { id: other } });
+      await settle();
+    });
+    expect(checkStaffProfile).not.toHaveBeenCalled();
+    expect(engine.setProductionIdentity).not.toHaveBeenCalled();
+  });
+});
+
+describe('LiveGate: the owner’s orders (B3)', () => {
+  beforeEach(() => {
+    engine = new FakeRuntime();
+    configured = true;
+    role = 'owner';
+  });
+
+  const mount = async (screen: ScreenKey) => {
+    engine.state.screen = screen;
+    render(
+      <LiveGate initialScreen={screen}>
+        <div />
+      </LiveGate>
+    );
+    await act(settle);
+  };
+
+  it('reads the orders once on a staff page, for the owner, after the flavour list', async () => {
+    await mount('orders');
+    expect(engine.loadFlavours).toHaveBeenCalledExactlyOnceWith(client);
+    expect(engine.loadOrders).toHaveBeenCalledExactlyOnceWith(client);
+    expect(engine.loadOrders.mock.invocationCallOrder[0]).toBeGreaterThan(
+      engine.loadFlavours.mock.invocationCallOrder[0]
+    );
+    // The owner's recipes too, for the same reason: a recipe for a flavour the screens do not know is ignored.
+    expect(engine.loadRecipes).toHaveBeenCalledExactlyOnceWith(client, undefined, undefined, null);
+    expect(engine.loadRecipes.mock.invocationCallOrder[0]).toBeGreaterThan(
+      engine.loadFlavours.mock.invocationCallOrder[0]
+    );
+    // Mutation: dropping the owner test reads the orders for a helper, who is refused every order RPC.
+  });
+
+  it('does not read the orders when the flavour list could not be read (an unknown flavour would crash the screens)', async () => {
+    engine.loadFlavours.mockResolvedValue(false);
+    await mount('orders');
+    expect(engine.loadFlavours).toHaveBeenCalledOnce();
+    expect(engine.loadOrders).not.toHaveBeenCalled();
+    expect(engine.loadRecipes).not.toHaveBeenCalled();
+    // Mutation: ignoring the result loads orders whose flavours the screens do not know.
+  });
+
+  it('reads the owner’s upcoming bazaars and stock catalogue once she is verified, and for nobody else', async () => {
+    role = 'owner';
+    await mount('bazaar');
+    expect(engine.loadScheduledEvents).toHaveBeenCalledExactlyOnceWith(client);
+    expect(engine.loadStockCatalogue).toHaveBeenCalledExactlyOnceWith(client);
+    expect(engine.loadProduction).toHaveBeenCalledExactlyOnceWith(client); // C2
+    engine = new FakeRuntime();
+    role = 'helper';
+    await mount('bazaar');
+    expect(engine.loadScheduledEvents).not.toHaveBeenCalled();
+    expect(engine.loadStockCatalogue).not.toHaveBeenCalled();
+    expect(engine.loadProduction).not.toHaveBeenCalled();
+    engine = new FakeRuntime();
+    role = 'owner';
+    await mount('shop'); // a customer page: nothing is verified there
+    expect(engine.loadScheduledEvents).not.toHaveBeenCalled();
+    expect(engine.loadStockCatalogue).not.toHaveBeenCalled();
+    expect(engine.loadProduction).not.toHaveBeenCalled();
+    // Mutation: dropping the owner test asks a helper for a list the database refuses, and the customer page for one it cannot see.
+  });
+
+  it('never reads the orders or the recipes for a helper, or on a customer page', async () => {
+    role = 'helper';
+    await mount('orders');
+    expect(engine.loadOperationsHealth).not.toHaveBeenCalled();
+    expect(engine.loadOrders).not.toHaveBeenCalled();
+    expect(engine.loadRecipes).not.toHaveBeenCalled();
+    engine = new FakeRuntime();
+    role = 'owner';
+    await mount('shop');
+    expect(engine.loadOperationsHealth).not.toHaveBeenCalled();
+    expect(engine.loadOrders).not.toHaveBeenCalled();
+    expect(engine.loadRecipes).not.toHaveBeenCalled();
+  });
+
+  it('a signed-in owner who passes through a customer page is still re-checked when the tab comes back', async () => {
+    await mount('orders'); // verified as the owner
+    engine.state.screen = 'shop' as ScreenKey; // the shop preview: a customer screen
+    vi.mocked(checkStaffProfile).mockClear();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await settle();
+    });
+    expect(checkStaffProfile).toHaveBeenCalledOnce();
+    // Mutation: skipping every customer screen lets an owner whose access was revoked keep the orders she already loaded.
+  });
+
+  it('reads them again when the tab comes back, not when it goes away', async () => {
+    await mount('orders');
+    engine.reloadOrders.mockClear();
+    engine.loadOperationsHealth.mockClear();
+    const visibility = async (value: 'hidden' | 'visible') => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await settle();
+      });
+    };
+    await visibility('hidden');
+    expect(engine.reloadOrders).not.toHaveBeenCalled();
+    expect(engine.loadOperationsHealth).not.toHaveBeenCalled();
+    await visibility('visible');
+    expect(engine.reloadOrders).toHaveBeenCalledOnce();
+    expect(engine.loadOperationsHealth).toHaveBeenCalledWith(null);
+  });
+});
